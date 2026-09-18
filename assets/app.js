@@ -10,26 +10,71 @@ const $ = s => document.querySelector(s);
 const BATCH = 6;          // pages per API call
 const KEY_STORE = 'nq.key';
 const MODEL_STORE = 'nq.model';
+const EFFORT_STORE = 'nq.effort';
 
 let agencies = [];
 let results = [];
 let abort = null;
 
-/* ---------- remembered settings ---------------------------------------- */
-try {
-  const k = localStorage.getItem(KEY_STORE);
-  if (k) $('#key').value = k;
-  const m = localStorage.getItem(MODEL_STORE);
-  if (m) $('#model').value = m;
-} catch { /* private window — just type it each time */ }
+/* ---------- remembered settings -----------------------------------------
+   The key is written on every keystroke and paste, not on blur, so it
+   survives typing it and clicking straight through. localStorage is per
+   browser and per site, and has no expiry — it stays until site data is
+   cleared or Forget is pressed.
+   ------------------------------------------------------------------------ */
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); return true; } catch { return false; } },
+  del(k) { try { localStorage.removeItem(k); } catch {} }
+};
 
-$('#key').addEventListener('change', e => {
-  try { localStorage.setItem(KEY_STORE, e.target.value.trim()); } catch {}
+function keyStatus(msg, colour) {
+  const el = $('#keystat');
+  if (!el) return;
+  el.innerHTML = msg ? `<b style="color:${colour}">${esc(msg)}</b> &middot; ` : '';
+}
+
+function showSaved() {
+  const k = $('#key').value.trim();
+  if (!k) return keyStatus('', '');
+  keyStatus(`Saved on this browser (…${k.slice(-4)})`, 'var(--green)');
+}
+
+/* restore */
+(function restore() {
+  const k = store.get(KEY_STORE);
+  if (k) { $('#key').value = k; showSaved(); }
+  const m = store.get(MODEL_STORE);
+  if (m) $('#model').value = m;
+  const e = store.get(EFFORT_STORE);
+  if (e) $('#effort').value = e;
+})();
+
+/* save as they type or paste */
+let saveTimer = null;
+$('#key').addEventListener('input', e => {
+  const v = e.target.value.trim();
+  clearTimeout(saveTimer);
+  if (!v) { store.del(KEY_STORE); keyStatus('', ''); return; }
+  saveTimer = setTimeout(() => {
+    store.set(KEY_STORE, v)
+      ? showSaved()
+      : keyStatus('Could not save — private window?', 'var(--amber)');
+  }, 250);
 });
+
+$('#forget').addEventListener('click', () => {
+  store.del(KEY_STORE);
+  $('#key').value = '';
+  keyStatus('Key removed from this browser', 'var(--muted)');
+  $('#key').focus();
+});
+
 $('#model').addEventListener('change', e => {
-  try { localStorage.setItem(MODEL_STORE, e.target.value); } catch {}
+  store.set(MODEL_STORE, e.target.value);
   if (agencies.length) drawAgencies();
 });
+$('#effort').addEventListener('change', e => store.set(EFFORT_STORE, e.target.value));
 
 /* ---------- logging ----------------------------------------------------- */
 function log(msg, cls = '') {

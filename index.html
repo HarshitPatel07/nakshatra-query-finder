@@ -32,6 +32,7 @@
         <span class="lbl">Anthropic API key</span>
         <input type="password" id="key" placeholder="sk-ant-..." autocomplete="off">
       </label>
+      <button class="btn ghost sm" id="forget" style="margin-bottom:1px" title="Remove the saved key from this browser">Forget</button>
       <label class="fld" style="width:190px;margin-bottom:0">
         <span class="lbl">Model</span>
         <select id="model">
@@ -49,8 +50,9 @@
       </label>
     </div>
     <p class="note" style="margin-top:10px">
-      Get a key at <code>console.anthropic.com</code> &rarr; API keys. It is remembered on this
-      computer so you only type it once.
+      <span id="keystat"></span>
+      Get a key at <code>console.anthropic.com</code> &rarr; API keys. It is saved in this browser
+      and stays until you clear site data or press Forget &mdash; you only type it once.
     </p>
   </section>
 
