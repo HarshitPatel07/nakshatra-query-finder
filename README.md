@@ -1,22 +1,39 @@
 # Nakshatra Query Finder
 
+Live at <https://harshitpatel07.github.io/nakshatra-query-finder/>
+
 Reads a folder of scanned Axis Bank agency-audit evidence and drafts the
 **Auditor Observations** — the queries — the way they appear on the
 AGENCY AUDIT RATING AND SCORE CARD.
 
 ## Run it
 
+Just open the live URL above — nothing to install.
+
+To run it locally instead (e.g. while editing):
+
 ```bash
 python -m http.server 8130 --directory C:\Harshit\nakshatra_query
 ```
 
-Open <http://localhost:8130>. A server is required (the page uses ES modules,
-which browsers refuse to load from `file://`).
+Open <http://localhost:8130>. A server is required either way; the page uses ES
+modules, which browsers refuse to load from `file://`.
+
+**When you change `app.js`, `scan.js`, `audit.js` or `app.css`, bump the `?v=`
+number** on the `<link>` and `<script>` in `index.html` and on the two imports at
+the top of `app.js`. GitHub Pages caches assets hard — without the bump, people
+who have visited before keep running the old build.
 
 ## Use it
 
-1. Paste your Anthropic API key (console.anthropic.com → API keys). It is kept
-   in this browser's `localStorage` only — never in these files, never pushed.
+1. Paste your Anthropic API key (console.anthropic.com → API keys). It saves as
+   you type and comes back on every later visit — the field shows the last four
+   characters as confirmation, and **Forget** clears it. Kept in this browser's
+   `localStorage` only: never in these files, never pushed, never sent anywhere
+   but Anthropic.
+
+   It is per browser and per site, so the key you save on the live URL is
+   separate from one saved on `localhost`, and a private window won't keep it.
 2. Click the drop zone and pick a folder:
    - pick the **parent** (`Nakshtra`) to do every agency in one run, or
    - pick a **single agency folder** for just that one.
