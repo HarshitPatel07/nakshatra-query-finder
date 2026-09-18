@@ -2,8 +2,10 @@
    app.js — wiring: pick folder, show cost, run the review, render results
    ========================================================================== */
 
-import { groupByAgency, countPages, pages, estimateCost } from './scan.js';
-import { readBatch, consolidate } from './audit.js';
+/* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
+   without it a returning visitor keeps running the old build. */
+import { groupByAgency, countPages, pages, estimateCost } from './scan.js?v=2';
+import { readBatch, consolidate } from './audit.js?v=2';
 
 const $ = s => document.querySelector(s);
 
