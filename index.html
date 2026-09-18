@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nakshatra Query Finder</title>
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <h1>Nakshatra Query Finder</h1>
+    <p>Agency audit &mdash; reads scanned evidence and drafts the Auditor Observations</p>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- ============ 1. SETUP ============ -->
+  <section class="panel no-print" id="p-setup">
+    <h2>1 &middot; Setup</h2>
+
+    <div class="warnbox">
+      Your API key stays in this browser only (<code>localStorage</code>) &mdash; it is never written
+      into these files and never uploaded anywhere except to Anthropic when a review runs.
+      Scans are sent to the Claude API to be read; nothing else leaves this machine.
+    </div>
+
+    <div class="row" style="align-items:flex-end">
+      <label class="fld" style="flex:1;min-width:280px;margin-bottom:0">
+        <span class="lbl">Anthropic API key</span>
+        <input type="password" id="key" placeholder="sk-ant-..." autocomplete="off">
+      </label>
+      <label class="fld" style="width:190px;margin-bottom:0">
+        <span class="lbl">Model</span>
+        <select id="model">
+          <option value="claude-opus-5">Opus 5 &mdash; most accurate</option>
+          <option value="claude-sonnet-5">Sonnet 5 &mdash; cheaper</option>
+        </select>
+      </label>
+      <label class="fld" style="width:150px;margin-bottom:0">
+        <span class="lbl">Care level</span>
+        <select id="effort">
+          <option value="high" selected>High</option>
+          <option value="max">Maximum</option>
+          <option value="medium">Medium</option>
+        </select>
+      </label>
+    </div>
+    <p class="note" style="margin-top:10px">
+      Get a key at <code>console.anthropic.com</code> &rarr; API keys. It is remembered on this
+      computer so you only type it once.
+    </p>
+  </section>
+
+  <!-- ============ 2. FOLDER ============ -->
+  <section class="panel no-print" id="p-folder">
+    <h2>2 &middot; Choose the audit folder</h2>
+
+    <div class="drop" id="drop">
+      <b>Click to pick a folder</b>
+      Pick the parent folder (e.g. <code>Nakshtra</code>) to do every agency at once,
+      or a single agency folder.
+    </div>
+    <input type="file" id="picker" webkitdirectory directory multiple class="hide">
+
+    <div id="scan-out" class="hide" style="margin-top:18px">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:34px"></th>
+            <th>Agency folder</th>
+            <th>Files</th>
+            <th class="num">Pages</th>
+            <th class="num">Est. cost</th>
+          </tr>
+        </thead>
+        <tbody id="agency-rows"></tbody>
+      </table>
+      <div class="row" style="margin-top:16px;justify-content:space-between">
+        <span class="meta" id="tot-line"></span>
+        <button class="btn" id="run">Find queries</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 3. PROGRESS ============ -->
+  <section class="panel no-print hide" id="p-prog">
+    <h2>3 &middot; Reading</h2>
+    <div class="bar"><i id="pbar"></i></div>
+    <div class="row" style="justify-content:space-between;margin-bottom:10px">
+      <span class="meta" id="pstat">Starting&hellip;</span>
+      <button class="btn ghost sm" id="stop">Stop</button>
+    </div>
+    <div class="log" id="log"></div>
+  </section>
+
+  <!-- ============ 4. RESULTS ============ -->
+  <section class="panel hide" id="p-res">
+    <div class="row no-print" style="justify-content:space-between;margin-bottom:6px">
+      <h2 style="margin:0">4 &middot; Auditor observations</h2>
+      <span>
+        <button class="btn ghost sm" id="copy">Copy</button>
+        <button class="btn ghost sm" id="csv">Download CSV</button>
+        <button class="btn ghost sm" id="print">Print</button>
+      </span>
+    </div>
+    <div id="results"></div>
+  </section>
+
+</div>
+
+<script src="assets/app.js" type="module"></script>
+</body>
+</html>

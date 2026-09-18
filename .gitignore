@@ -1,0 +1,13 @@
+# never commit audit evidence or scans
+*.pdf
+*.jpg
+*.jpeg
+*.png
+_test.*
+_scrape/
+output/
+
+# local
+.DS_Store
+Thumbs.db
+__pycache__/
