@@ -4,17 +4,25 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=13';
-import { readBatch, collate, checkKey } from './audit.js?v=13';
-import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=13';
-import { loadLearned, forgetLearned } from './corpus.js?v=13';
+import { groupByAgency, countPages, pages } from './scan.js?v=14';
+import { readBatch, collate, checkKey } from './audit.js?v=14';
+import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=14';
+import { loadLearned, forgetLearned } from './corpus.js?v=14';
 
 const $ = s => document.querySelector(s);
 
-/* Pages per API call. Free-tier quotas count REQUESTS, not pages, so a bigger
-   batch is the cheapest way to make a 49-page folder fit: 5 calls instead of 9.
-   Ten pages is ~24k input tokens, comfortable in a 1M window. */
-const BATCH = 10;
+/* Pages per API call, and it is a real trade-off.
+
+   Accuracy wants FEW pages per call: a vision model reading ten photographed
+   register pages at once splits its attention ten ways and starts missing
+   blank cells. Free-tier quota wants MANY, because the quota counts requests,
+   not pages — a 49-page folder is 17 calls at three per batch but only 5 at
+   ten, and the newest Gemini Flash allows 20 a day.
+
+   So the Care level chooses: Maximum reads carefully and spends requests,
+   Medium conserves them. */
+const BATCH_FOR = { max: 3, high: 6, medium: 10 };
+const batchSize = () => BATCH_FOR[$('#effort').value] || 6;
 const KEY_STORE = 'nq.key';
 const EFFORT_STORE = 'nq.effort';
 const OVERRIDE_STORE = 'nq.override';
@@ -176,7 +184,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=13');
+    const { importWorkbook } = await import('./import.js?v=14');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -276,7 +284,10 @@ $('#forget').addEventListener('click', () => {
   $('#key').focus();
 });
 
-$('#effort').addEventListener('change', e => store.set(EFFORT_STORE, e.target.value));
+$('#effort').addEventListener('change', e => {
+  store.set(EFFORT_STORE, e.target.value);
+  if (agencies.length) totals();     // request count changes with batch size
+});
 
 /* ---------- optional manual override ------------------------------------ */
 $('#advtoggle').addEventListener('click', ev => {
@@ -431,8 +442,11 @@ function totals() {
   const each = sel.map(a => cost(a.pages));
   const known = each.every(v => typeof v === 'number');
   const c = known ? each.reduce((n, v) => n + v, 0) : (detected ? null : undefined);
+  /* Free quotas count requests, so say how many this will take before it runs */
+  const calls = sel.reduce((n, a) => n + Math.ceil(a.pages / batchSize()), 0);
   $('#tot-line').textContent =
     `${sel.length} agency folder${sel.length === 1 ? '' : 's'} · ${p} pages · ` +
+    `${calls} request${calls === 1 ? '' : 's'} · ` +
     (typeof c === 'number' ? 'about ' + money(c) : money(c));
   $('#run').disabled = !sel.length;
 }
@@ -476,7 +490,7 @@ async function run() {
       const findings = [];
       let buf = [];
       let batchNo = 0;
-      let splitTo = BATCH;      // shrinks if replies keep overflowing
+      let splitTo = batchSize();      // shrinks if replies keep overflowing
 
       const flush = async (force) => {
         if (!buf.length) return;
@@ -548,7 +562,7 @@ async function run() {
         }
         if (!buf.length) phase(`Preparing ${pg.label}`);
         buf.push(pg);
-        if (buf.length >= BATCH) await flush();
+        if (buf.length >= batchSize()) await flush();
       }
       await flush(true);
 

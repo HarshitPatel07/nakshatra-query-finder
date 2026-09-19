@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Nakshatra Query Finder</title>
-<link rel="stylesheet" href="assets/app.css?v=13">
+<link rel="stylesheet" href="assets/app.css?v=14">
 </head>
 <body>
 
@@ -34,10 +34,10 @@
       </label>
       <label class="fld" style="width:150px;margin-bottom:0">
         <span class="lbl">Care level</span>
-        <select id="effort">
-          <option value="high" selected>High</option>
-          <option value="max">Maximum</option>
-          <option value="medium">Medium</option>
+        <select id="effort" style="min-width:210px">
+          <option value="max">Maximum &mdash; 3 pages a call</option>
+          <option value="high" selected>High &mdash; 6 pages a call</option>
+          <option value="medium">Medium &mdash; 10 pages a call</option>
         </select>
       </label>
       <button class="btn ghost sm" id="forget" style="margin-bottom:1px" title="Remove the saved key">Forget</button>
@@ -151,6 +151,6 @@
 
 </div>
 
-<script src="assets/app.js?v=13" type="module"></script>
+<script src="assets/app.js?v=14" type="module"></script>
 </body>
 </html>
