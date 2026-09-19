@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=12';
+import { PROVIDERS } from './providers.js?v=13';
 import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
-         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=12';
+         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=13';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
@@ -51,9 +51,14 @@ HARD RULES
 - NEVER state a month, a name, an ID or a date you cannot actually read on the page.
   If the month is not legible, set "month" to "" — do not guess. A wrong month is worse
   than no month, because it is sent to the bank.
-- Report one issue per blank field per person. Do NOT bundle several fields into one issue,
-  and do NOT summarise as "several entries are incomplete" — this firm writes a separate
-  query for each.
+- GRANULARITY, which this firm is strict about:
+    · One issue per DOCUMENT + MONTH + PERSON. If three fields are blank in the same
+      person's row on the same page, that is ONE issue whose "field" lists all three,
+      e.g. "CM Sign, Agency Authorised Sign". It is NOT three issues.
+    · Different people on the same page ARE separate issues — they get merged later.
+    · If a field is blank for nearly everyone on the page, say so once with who: ""
+      rather than listing dozens of names.
+- Do NOT summarise as "several entries are incomplete" — name the field.
 - A page with nothing wrong gets an empty issues array. Do not manufacture findings.
 - Only use these categories: ${CATEGORIES.join(' | ')}
 
@@ -266,6 +271,13 @@ export function phrase(issue) {
   let s = `${doc} ${stem}`;
   if (issue.month) s += ` for the month of ${issue.month}`;
   s += '.';
+  /* "(All Executive Sign)" rather than seventy names, matching the sheets */
+  const all = /^__ALL__(\d+)$/.exec(issue.who || '');
+  if (all) {
+    s += ` (All ${issue.field || 'entries'})`;
+    return s;
+  }
+
   if (issue.field) s += ` (i.e. ${issue.field})`;
   if (issue.who) s += `(${issue.whoLabel || 'CM Name'} -:${issue.who})`;
   return s;
@@ -371,9 +383,14 @@ function monthOrder(m) {
   return (+x[2]) * 12 + (i < 0 ? 0 : i);
 }
 
+/* Naming eight people is useful; naming seventy is a wall of text nobody
+   reads, and the firm writes "(All …)" in that case instead. */
+const NAME_CAP = 8;
+
 function joinNames(list) {
   const u = [...new Set(list.filter(Boolean))];
   if (u.length <= 1) return u[0] || '';
+  if (u.length > NAME_CAP) return `__ALL__${u.length}`;
   return u.slice(0, -1).join(', ') + ' & ' + u[u.length - 1];
 }
 
@@ -386,10 +403,40 @@ function joinMonths(list) {
   return u.slice(0, -1).join(', ') + ' & ' + u[u.length - 1];
 }
 
+/* The firm lists every blank field on one page as a single query —
+   "(i.e. Count of Case Allocated, Agency Authorised Sign)" — not one query per
+   field. Seven rows for one score card is the model being too literal. */
+function mergeFields(flat) {
+  const byDMW = new Map();
+  for (const i of flat) {
+    const k = [i.document, i.month, i.who].map(x =>
+      String(x || '').toLowerCase().trim()).join('|');
+    if (!byDMW.has(k)) byDMW.set(k, { ...i, fields: [], sources: [] });
+    const g = byDMW.get(k);
+    if (i.field) g.fields.push(i.field);
+    g.sources.push(i.source);
+  }
+  return [...byDMW.values()].map(g => ({
+    ...g,
+    field: joinFields(g.fields),
+    source: g.sources[0],
+    sources: [...new Set(g.sources)]
+  }));
+}
+
+function joinFields(list) {
+  const u = [...new Set(list.filter(Boolean))];
+  if (u.length <= 1) return u[0] || '';
+  if (u.length === 2) return u.join(', ');
+  return u.slice(0, -1).join(', ') + ' & ' + u[u.length - 1];
+}
+
 export function collate(findings) {
-  const flat = [];
+  let flat = [];
   findings.forEach(f => (f.issues || []).forEach(i =>
     flat.push({ ...i, source: f.label })));
+
+  flat = mergeFields(flat);
 
   /* pass 1 — same document+field+month, different people */
   const byDFM = new Map();
@@ -412,8 +459,22 @@ export function collate(findings) {
     h.sources.push(...g.sources);
   }
 
+  /* An audit covers one quarter, so the monthly pages cluster. A month far
+     outside that cluster is far more likely to be a misread than a real page
+     — flag it for checking rather than dropping it, because dropping could
+     hide a genuine finding. */
+  const tally = new Map();
+  for (const g of byDFW.values())
+    for (const m of g.months) tally.set(m, (tally.get(m) || 0) + 1);
+  const common = [...tally.entries()].filter(([, n]) => n > 1).map(([m]) => monthOrder(m));
+  const lo = common.length ? Math.min(...common) : null;
+  const hi = common.length ? Math.max(...common) : null;
+  const suspect = m => lo !== null && m &&
+    (monthOrder(m) < lo - 1 || monthOrder(m) > hi + 1);
+
   return [...byDFW.values()].map(g => {
     const issue = { ...g, who: g.names, month: joinMonths(g.months) };
+    const odd = g.months.filter(suspect);
     return {
       category: canonCat(g.category) || 'Process Management',
       text: g.note || phrase(issue) || g.text || '',
@@ -421,6 +482,7 @@ export function collate(findings) {
       field: g.field || '',
       who: g.names || '',
       month: issue.month,
+      review: odd.length ? `check the month — ${odd.join(', ')} sits outside the audit period` : '',
       sources: [...new Set(g.sources)]
     };
   }).filter(r => r.text)

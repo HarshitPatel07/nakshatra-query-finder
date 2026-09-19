@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=12';
-import { readBatch, collate, checkKey } from './audit.js?v=12';
-import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=12';
-import { loadLearned, forgetLearned } from './corpus.js?v=12';
+import { groupByAgency, countPages, pages } from './scan.js?v=13';
+import { readBatch, collate, checkKey } from './audit.js?v=13';
+import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=13';
+import { loadLearned, forgetLearned } from './corpus.js?v=13';
 
 const $ = s => document.querySelector(s);
 
@@ -176,7 +176,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=12');
+    const { importWorkbook } = await import('./import.js?v=13');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -625,8 +625,9 @@ function render() {
         <div style="margin-top:18px">
           <div class="catline">${esc(cat)} <span>${list.length}</span></div>
           ${list.map(o => `
-            <div class="obs low">
+            <div class="obs ${o.review ? 'medium' : 'low'}">
               <div class="txt" style="font-weight:500">${esc(o.text)}</div>
+              ${o.review ? `<div class="src" style="color:var(--amber)">⚠ ${esc(o.review)}</div>` : ''}
               ${o.sources?.length
                 ? `<div class="src">${esc(o.sources.slice(0, 6).join('  ·  '))}${
                     o.sources.length > 6 ? ` +${o.sources.length - 6}` : ''}</div>` : ''}
@@ -660,11 +661,11 @@ $('#copy').addEventListener('click', async () => {
 $('#csv').addEventListener('click', () => {
   const q = s => `"${String(s ?? '').replace(/"/g, '""')}"`;
   /* same columns as the Query Sheet, so it pastes straight in */
-  const rows = [['Agency', 'Main Category', 'Observation', 'Status', 'Sources']];
+  const rows = [['Agency', 'Main Category', 'Observation', 'Status', 'Check', 'Sources']];
   results.forEach(r => {
-    if (!r.observations.length) rows.push([r.agency, '', 'Nil', '', '']);
+    if (!r.observations.length) rows.push([r.agency, '', 'Nil', '', '', '']);
     r.observations.forEach(o => rows.push([
-      r.agency, o.category, o.text, '', (o.sources || []).join('; ')
+      r.agency, o.category, o.text, '', o.review || '', (o.sources || []).join('; ')
     ]));
   });
   const blob = new Blob(['﻿' + rows.map(r => r.map(q).join(',')).join('\r\n')],
