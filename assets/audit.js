@@ -3,7 +3,7 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=6';
+import { PROVIDERS } from './providers.js?v=7';
 
 /* --------------------------------------------------------------------------
    What an Axis Nakshatra agency audit actually checks. Derived from the real
@@ -92,47 +92,72 @@ Reply with ONLY a JSON object, no prose and no code fence:
 
 /* -------------------------------------------------------------------------- */
 
-/* cfg = { provider, key, model, effort } */
+const MAX_TRIES = 5;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* "Please retry in 54.05s" — providers often say exactly how long to wait. */
+function hintedDelay(detail) {
+  const m = /retry in (\d+(?:\.\d+)?)\s*s/i.exec(detail || '');
+  return m ? Math.min(Math.ceil(parseFloat(m[1])) * 1000, 60000) : 0;
+}
+
+/* cfg = { provider, key, model, effort, onRetry? } */
 async function call(cfg, system, content, signal) {
   const P = PROVIDERS[cfg.provider];
   if (!P) throw new Error('unknown provider: ' + cfg.provider);
 
   const req = P.build(cfg.key, cfg.model, cfg.effort, system, content);
 
-  let res;
-  try {
-    res = await fetch(req.url, {
-      method: 'POST',
-      headers: req.headers,
-      body: JSON.stringify(req.body),
-      signal
-    });
-  } catch (e) {
-    if (e.name === 'AbortError') throw e;
-    /* A browser CORS refusal surfaces as a bare "Failed to fetch" with no
-       response to inspect. Retrying cannot help, so end the run and say why. */
-    const err = new Error(
-      `blocked by the browser — ${P.label} would not accept a direct call from a web page`);
-    err.fatal = true;
-    throw err;
-  }
+  for (let attempt = 1; ; attempt++) {
+    let res;
+    try {
+      res = await fetch(req.url, {
+        method: 'POST', headers: req.headers,
+        body: JSON.stringify(req.body), signal
+      });
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+      /* A browser CORS refusal surfaces as a bare "Failed to fetch" with no
+         response to inspect. Retrying cannot help, so end the run and say why. */
+      const err = new Error(
+        `blocked by the browser — ${P.label} would not accept a direct call from a web page`);
+      err.fatal = true;
+      throw err;
+    }
 
-  if (!res.ok) {
+    if (res.ok) return P.read(await res.json());
+
     let detail = '';
     try { detail = P.errorOf(await res.json()); } catch { /* non-JSON body */ }
-    const err = new Error(`HTTP ${res.status}${detail ? ' — ' + detail : ''}`);
 
-    /* No amount of retrying fixes an empty wallet, a bad key or a blocked
-       account — these end the run instead of failing page after page.
-       Rate limits and server blips stay retryable. */
-    err.fatal = res.status === 401 || res.status === 403 ||
-                (res.status === 400 &&
-                 /credit balance|billing|quota|api key not valid|invalid.*api.?key/i.test(detail));
+    /* An empty wallet, a bad key or a model with no quota never heals — stop
+       the run rather than failing page after page. */
+    const noQuota = /limit:\s*0/i.test(detail);
+    const fatal = res.status === 401 || res.status === 403 ||
+                  (res.status === 429 && noQuota) ||
+                  (res.status === 400 &&
+                   /credit balance|billing|api key not valid|invalid.*api.?key/i.test(detail));
+
+    /* "High demand" and plain rate limits ARE temporary — the provider is
+       telling us to come back, so come back instead of dropping the pages. */
+    const worthRetrying = !fatal &&
+      (res.status === 503 || res.status === 429 || res.status >= 500);
+
+    if (worthRetrying && attempt < MAX_TRIES) {
+      const wait = hintedDelay(detail) || Math.min(2000 * 2 ** (attempt - 1), 30000);
+      cfg.onRetry?.(`${res.status === 503 ? 'busy' : 'rate limited'}, waiting ` +
+                    `${Math.round(wait / 1000)}s (try ${attempt + 1} of ${MAX_TRIES})`);
+      await sleep(wait);
+      if (signal?.aborted) { const a = new Error('aborted'); a.name = 'AbortError'; throw a; }
+      continue;
+    }
+
+    const err = new Error(`HTTP ${res.status}${detail ? ' — ' + detail : ''}`);
+    err.fatal = fatal;
     err.status = res.status;
+    err.exhausted = worthRetrying;      // gave it every chance and it still failed
     throw err;
   }
-
-  return P.read(await res.json());
 }
 
 /* Models sometimes wrap JSON in a fence or add a stray sentence. Dig it out. */

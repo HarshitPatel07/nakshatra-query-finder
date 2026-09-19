@@ -4,9 +4,9 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=6';
-import { readBatch, consolidate, checkKey } from './audit.js?v=6';
-import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=6';
+import { groupByAgency, countPages, pages } from './scan.js?v=7';
+import { readBatch, consolidate, checkKey } from './audit.js?v=7';
+import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=7';
 
 const $ = s => document.querySelector(s);
 
@@ -154,6 +154,31 @@ async function identify(key) {
 }
 
 function redrawCosts() { if (agencies.length) drawAgencies(); }
+
+/* --------------------------------------------------------------------------
+   Drop to the next-best model this key offers. Called when the current one
+   has been given every retry and is still refusing — an alias like
+   "gemini-flash-latest" can sit overloaded for a long stretch while a pinned
+   version answers immediately.
+   Returns true if it switched.
+   -------------------------------------------------------------------------- */
+async function stepDownModel() {
+  const list = detected?.candidates || [];
+  const at = list.indexOf(detected.model);
+  if (at === -1 || at + 1 >= list.length) return false;
+
+  for (const next of list.slice(at + 1)) {
+    try {
+      await checkKey({ provider: detected.provider, key: $('#key').value.trim(),
+                       model: next, effort: 'low' });
+      log(`  switching from ${detected.label} to ${pretty(next)}`, 'warn');
+      detected.model = next;
+      detected.label = pretty(next);
+      return true;
+    } catch { /* that one is no good either — keep walking down */ }
+  }
+  return false;
+}
 
 /* "gemini-3.5-flash" -> "Gemini 3.5 Flash" */
 function pretty(id) {
@@ -337,6 +362,7 @@ async function run() {
 
   const totalPages = sel.reduce((n, a) => n + a.pages, 0);
   let done = 0;
+  let failedPages = 0;      // pages that never got read, after every retry
 
   try {
     for (const agency of sel) {
@@ -350,13 +376,22 @@ async function run() {
         if (!buf.length) return;
         const chunk = buf; buf = [];
         try {
-          const got = await readBatch(C, chunk, abort.signal);
+          const got = await readBatch(
+            { ...C, onRetry: m => log('  ' + m, 'warn') }, chunk, abort.signal);
           findings.push(...got);
           const n = got.reduce((s, g) => s + g.issues.length, 0);
           log(`  read ${chunk.length} pages — ${n} issue${n === 1 ? '' : 's'}`, n ? 'warn' : 'ok');
         } catch (e) {
           if (e.name === 'AbortError' || e.fatal) throw e;
           log(`  batch failed: ${e.message}`, 'err');
+          /* A model that stays overloaded after every retry is not going to
+             carry a 50-page folder — move down to the next one that works. */
+          if (e.exhausted && await stepDownModel()) {
+            log(`  retrying these ${chunk.length} pages on ${detected.label}`, 'warn');
+            buf = chunk.concat(buf);
+            return;
+          }
+          failedPages += chunk.length;
         }
         done += chunk.length;
         $('#pbar').style.width = Math.round(done / totalPages * 100) + '%';
@@ -388,6 +423,10 @@ async function run() {
       }
     }
 
+    if (failedPages) {
+      log(`WARNING: ${failedPages} page(s) were never read — the observations ` +
+          `below are incomplete. Re-run to cover them.`, 'err');
+    }
     render();
   } catch (e) {
     if (e.name === 'AbortError') log('stopped — showing what was read', 'warn');
