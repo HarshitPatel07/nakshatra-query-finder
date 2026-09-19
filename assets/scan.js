@@ -148,13 +148,4 @@ function finish(canvas, label) {
 /* Anthropic bills vision at roughly (w x h) / 750 tokens. */
 export function imageTokens(w, h) { return Math.ceil((w * h) / 750); }
 
-/* A full page at max edge is ~2.4k tokens; use that to price a folder. */
-export function estimateCost(pageCount, model) {
-  const perPage = imageTokens(MAX_EDGE, Math.round(MAX_EDGE * 0.75));
-  const inTok = pageCount * (perPage + 120);       // + prompt overhead
-  const outTok = pageCount * 170;                  // findings written back
-  const rate = model === 'claude-sonnet-5'
-    ? { in: 2 / 1e6, out: 10 / 1e6 }
-    : { in: 5 / 1e6, out: 25 / 1e6 };
-  return inTok * rate.in + outTok * rate.out;
-}
+/* Costing lives in providers.js, where the per-model rates are. */

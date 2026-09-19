@@ -1,18 +1,9 @@
 /* ==========================================================================
-   audit.js — the Claude calls: read pages, then consolidate into observations
+   audit.js — read pages, then consolidate into observations.
+   Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-const API = 'https://api.anthropic.com/v1/messages';
-
-/* Browser calls need this header; the key is the user's own, held locally. */
-function headers(key) {
-  return {
-    'content-type': 'application/json',
-    'x-api-key': key,
-    'anthropic-version': '2023-06-01',
-    'anthropic-dangerous-direct-browser-access': 'true'
-  };
-}
+import { PROVIDERS } from './providers.js?v=4';
 
 /* --------------------------------------------------------------------------
    What an Axis Nakshatra agency audit actually checks. Derived from the real
@@ -101,30 +92,47 @@ Reply with ONLY a JSON object, no prose and no code fence:
 
 /* -------------------------------------------------------------------------- */
 
-async function call(key, body, signal) {
-  const res = await fetch(API, {
-    method: 'POST',
-    headers: headers(key),
-    body: JSON.stringify(body),
-    signal
-  });
+/* cfg = { provider, key, model, effort } */
+async function call(cfg, system, content, signal) {
+  const P = PROVIDERS[cfg.provider];
+  if (!P) throw new Error('unknown provider: ' + cfg.provider);
+
+  const req = P.build(cfg.key, cfg.model, cfg.effort, system, content);
+
+  let res;
+  try {
+    res = await fetch(req.url, {
+      method: 'POST',
+      headers: req.headers,
+      body: JSON.stringify(req.body),
+      signal
+    });
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    /* A browser CORS refusal surfaces as a bare "Failed to fetch" with no
+       response to inspect. Retrying cannot help, so end the run and say why. */
+    const err = new Error(
+      `blocked by the browser — ${P.label} would not accept a direct call from a web page`);
+    err.fatal = true;
+    throw err;
+  }
 
   if (!res.ok) {
     let detail = '';
-    try { detail = (await res.json())?.error?.message || ''; } catch { /* non-JSON body */ }
+    try { detail = P.errorOf(await res.json()); } catch { /* non-JSON body */ }
     const err = new Error(`HTTP ${res.status}${detail ? ' — ' + detail : ''}`);
 
     /* No amount of retrying fixes an empty wallet, a bad key or a blocked
-       account — these end the run instead of failing page after page. */
+       account — these end the run instead of failing page after page.
+       Rate limits and server blips stay retryable. */
     err.fatal = res.status === 401 || res.status === 403 ||
-                (res.status === 400 && /credit balance|billing|quota/i.test(detail));
+                (res.status === 400 &&
+                 /credit balance|billing|quota|api key not valid|invalid.*api.?key/i.test(detail));
     err.status = res.status;
     throw err;
   }
 
-  const json = await res.json();
-  if (json.stop_reason === 'refusal') throw new Error('request was declined by the model');
-  return json.content.filter(b => b.type === 'text').map(b => b.text).join('');
+  return P.read(await res.json());
 }
 
 /* Models sometimes wrap JSON in a fence or add a stray sentence. Dig it out. */
@@ -136,37 +144,20 @@ function parseJson(text) {
   return JSON.parse(raw.slice(s, e + 1));
 }
 
-function opts(model, effort) {
-  const o = { output_config: { effort } };
-  if (model !== 'claude-sonnet-5') o.thinking = { type: 'adaptive' };
-  return o;
-}
 
 /* --------------------------------------------------------------------------
    Read one batch of pages. `batch` is [{label, b64}, ...].
    Returns [{label, doc, issues:[...]}]
    -------------------------------------------------------------------------- */
-export async function readBatch(key, model, effort, batch, signal) {
+export async function readBatch(cfg, batch, signal) {
   const content = [];
   batch.forEach((p, i) => {
-    content.push({ type: 'text', text: `--- page ${i + 1}: ${p.label} ---` });
-    content.push({
-      type: 'image',
-      source: { type: 'base64', media_type: 'image/jpeg', data: p.b64 }
-    });
+    content.push({ text: `--- page ${i + 1}: ${p.label} ---` });
+    content.push({ image: p.b64 });
   });
-  content.push({
-    type: 'text',
-    text: `Report on all ${batch.length} page(s) above, in order.`
-  });
+  content.push({ text: `Report on all ${batch.length} page(s) above, in order.` });
 
-  const text = await call(key, {
-    model,
-    max_tokens: 8000,
-    system: READ_SYS,
-    messages: [{ role: 'user', content }],
-    ...opts(model, effort)
-  }, signal);
+  const text = await call(cfg, READ_SYS, content, signal);
 
   const out = parseJson(text);
   return (out.pages || []).map(p => ({
@@ -179,7 +170,7 @@ export async function readBatch(key, model, effort, batch, signal) {
 /* --------------------------------------------------------------------------
    Consolidate every page finding into the final observation list.
    -------------------------------------------------------------------------- */
-export async function consolidate(key, model, effort, agencyName, findings, signal) {
+export async function consolidate(cfg, agencyName, findings, signal) {
   const lines = findings
     .filter(f => f.issues.length)
     .map(f => `${f.label} [${f.doc}]\n` +
@@ -190,16 +181,9 @@ export async function consolidate(key, model, effort, agencyName, findings, sign
     return { score: 100, grade: 'A', category: 'Very Good', observations: [] };
   }
 
-  const text = await call(key, {
-    model,
-    max_tokens: 8000,
-    system: SUM_SYS,
-    messages: [{
-      role: 'user',
-      content: `Agency: ${agencyName}\nPages read: ${findings.length}\n\nRaw findings:\n\n${lines}`
-    }],
-    ...opts(model, effort)
-  }, signal);
+  const text = await call(cfg, SUM_SYS, [{
+    text: `Agency: ${agencyName}\nPages read: ${findings.length}\n\nRaw findings:\n\n${lines}`
+  }], signal);
 
   const out = parseJson(text);
   return {
@@ -210,11 +194,8 @@ export async function consolidate(key, model, effort, agencyName, findings, sign
   };
 }
 
-export async function checkKey(key, signal) {
-  await call(key, {
-    model: 'claude-haiku-4-5',
-    max_tokens: 4,
-    messages: [{ role: 'user', content: 'hi' }]
-  }, signal);
+/* Cheapest possible round-trip, to tell a bad key from a bad page. */
+export async function checkKey(cfg, signal) {
+  await call(cfg, 'Reply with the single word OK.', [{ text: 'ping' }], signal);
   return true;
 }

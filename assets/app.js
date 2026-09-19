@@ -4,15 +4,20 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages, estimateCost } from './scan.js?v=3';
-import { readBatch, consolidate } from './audit.js?v=3';
+import { groupByAgency, countPages, pages } from './scan.js?v=4';
+import { readBatch, consolidate, checkKey } from './audit.js?v=4';
+import { PROVIDERS, DEFAULT_PROVIDER, estimateCost } from './providers.js?v=4';
 
 const $ = s => document.querySelector(s);
 
 const BATCH = 6;          // pages per API call
-const KEY_STORE = 'nq.key';
-const MODEL_STORE = 'nq.model';
+const PROV_STORE = 'nq.provider';
 const EFFORT_STORE = 'nq.effort';
+/* Keys and model choice are per provider, so switching back doesn't lose them. */
+const keyStoreFor = p => `nq.key.${p}`;
+const modelStoreFor = p => `nq.model.${p}`;
+
+const providerId = () => $('#provider').value || DEFAULT_PROVIDER;
 
 let agencies = [];
 let results = [];
@@ -42,41 +47,97 @@ function showSaved() {
   keyStatus(`Saved on this browser (…${k.slice(-4)})`, 'var(--green)');
 }
 
+/* ---------- provider + model dropdowns ---------------------------------- */
+$('#provider').innerHTML = Object.entries(PROVIDERS)
+  .map(([id, p]) => `<option value="${id}">${esc(p.label)}${p.freeTier ? ' · free tier' : ''}</option>`)
+  .join('');
+
+function applyProvider() {
+  const id = providerId();
+  const P = PROVIDERS[id];
+
+  $('#model').innerHTML = P.models
+    .map(m => `<option value="${m.id}">${esc(m.label)}</option>`).join('');
+  const savedModel = store.get(modelStoreFor(id));
+  if (savedModel && P.models.some(m => m.id === savedModel)) $('#model').value = savedModel;
+
+  $('#keylbl').textContent = P.label + ' API key';
+  $('#key').placeholder = P.keyHint;
+  $('#keyurl').textContent = P.keyUrl;
+  $('#provnote').innerHTML = esc(P.note);
+  $('#provnote').style.color = P.freeTier ? 'var(--amber)' : 'var(--muted)';
+
+  $('#key').value = store.get(keyStoreFor(id)) || '';
+  showSaved();
+  if (agencies.length) drawAgencies();
+}
+
 /* restore */
 (function restore() {
-  const k = store.get(KEY_STORE);
-  if (k) { $('#key').value = k; showSaved(); }
-  const m = store.get(MODEL_STORE);
-  if (m) $('#model').value = m;
+  const p = store.get(PROV_STORE);
+  if (p && PROVIDERS[p]) $('#provider').value = p;
   const e = store.get(EFFORT_STORE);
   if (e) $('#effort').value = e;
+  applyProvider();
 })();
+
+$('#provider').addEventListener('change', e => {
+  store.set(PROV_STORE, e.target.value);
+  applyProvider();
+});
 
 /* save as they type or paste */
 let saveTimer = null;
 $('#key').addEventListener('input', e => {
   const v = e.target.value.trim();
+  const slot = keyStoreFor(providerId());
   clearTimeout(saveTimer);
-  if (!v) { store.del(KEY_STORE); keyStatus('', ''); return; }
+  if (!v) { store.del(slot); keyStatus('', ''); return; }
   saveTimer = setTimeout(() => {
-    store.set(KEY_STORE, v)
+    store.set(slot, v)
       ? showSaved()
       : keyStatus('Could not save — private window?', 'var(--amber)');
   }, 250);
 });
 
 $('#forget').addEventListener('click', () => {
-  store.del(KEY_STORE);
+  store.del(keyStoreFor(providerId()));
   $('#key').value = '';
   keyStatus('Key removed from this browser', 'var(--muted)');
   $('#key').focus();
 });
 
 $('#model').addEventListener('change', e => {
-  store.set(MODEL_STORE, e.target.value);
+  store.set(modelStoreFor(providerId()), e.target.value);
   if (agencies.length) drawAgencies();
 });
 $('#effort').addEventListener('change', e => store.set(EFFORT_STORE, e.target.value));
+
+/* ---------- test key ---------------------------------------------------- */
+$('#testkey').addEventListener('click', async () => {
+  const btn = $('#testkey');
+  const key = $('#key').value.trim();
+  if (!key) { keyStatus('Enter a key first', 'var(--amber)'); return; }
+  btn.disabled = true; btn.textContent = 'Testing…';
+  try {
+    await checkKey(cfg());
+    keyStatus('Key works', 'var(--green)');
+  } catch (e) {
+    keyStatus('Key failed — ' + e.message, 'var(--red)');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Test key';
+  }
+});
+
+/* everything the audit layer needs, in one object */
+function cfg() {
+  return {
+    provider: providerId(),
+    key: $('#key').value.trim(),
+    model: $('#model').value,
+    effort: $('#effort').value
+  };
+}
 
 /* ---------- logging ----------------------------------------------------- */
 function log(msg, cls = '') {
@@ -111,14 +172,14 @@ $('#picker').addEventListener('change', async e => {
 });
 
 function drawAgencies() {
-  const model = $('#model').value;
+  const prov = providerId(), model = $('#model').value;
   $('#agency-rows').innerHTML = agencies.map((a, i) => `
     <tr>
       <td><input type="checkbox" class="pick" data-i="${i}" checked></td>
       <td><span class="agency-name">${esc(a.name)}</span></td>
       <td class="meta">${a.files.length} file${a.files.length > 1 ? 's' : ''}</td>
       <td class="num">${a.pages}</td>
-      <td class="num">$${estimateCost(a.pages, model).toFixed(2)}</td>
+      <td class="num">${money(estimateCost(a.pages, prov, model))}</td>
     </tr>`).join('');
 
   $('#agency-rows').querySelectorAll('.pick')
@@ -132,12 +193,16 @@ function picked() {
     .map(c => agencies[+c.dataset.i]);
 }
 
+/* A free-tier model prices at zero — say "free", not "$0.00". */
+function money(v) { return v === 0 ? 'free' : '$' + v.toFixed(2); }
+
 function totals() {
   const sel = picked();
+  const prov = providerId(), model = $('#model').value;
   const p = sel.reduce((n, a) => n + a.pages, 0);
-  const c = sel.reduce((n, a) => n + estimateCost(a.pages, $('#model').value), 0);
+  const c = sel.reduce((n, a) => n + estimateCost(a.pages, prov, model), 0);
   $('#tot-line').textContent =
-    `${sel.length} agency folder${sel.length === 1 ? '' : 's'} · ${p} pages · about $${c.toFixed(2)}`;
+    `${sel.length} agency folder${sel.length === 1 ? '' : 's'} · ${p} pages · about ${money(c)}`;
   $('#run').disabled = !sel.length;
 }
 
@@ -149,11 +214,12 @@ $('#stop').addEventListener('click', () => {
 });
 
 async function run() {
-  const key = $('#key').value.trim();
-  if (!key) { alert('Enter your Anthropic API key first.'); $('#key').focus(); return; }
-
-  const model = $('#model').value;
-  const effort = $('#effort').value;
+  const C = cfg();
+  if (!C.key) {
+    alert(`Enter your ${PROVIDERS[C.provider].label} API key first.`);
+    $('#key').focus();
+    return;
+  }
   const sel = picked();
 
   abort = new AbortController();
@@ -178,7 +244,7 @@ async function run() {
         if (!buf.length) return;
         const chunk = buf; buf = [];
         try {
-          const got = await readBatch(key, model, effort, chunk, abort.signal);
+          const got = await readBatch(C, chunk, abort.signal);
           findings.push(...got);
           const n = got.reduce((s, g) => s + g.issues.length, 0);
           log(`  read ${chunk.length} pages — ${n} issue${n === 1 ? '' : 's'}`, n ? 'warn' : 'ok');
@@ -203,7 +269,7 @@ async function run() {
 
       log('  consolidating…');
       try {
-        const summary = await consolidate(key, model, effort, agency.name, findings, abort.signal);
+        const summary = await consolidate(C, agency.name, findings, abort.signal);
         results.push({ agency: agency.name, pages: findings.length, ...summary });
         log(`  ${summary.observations.length} observation(s), score ${summary.score}`, 'ok');
       } catch (e) {

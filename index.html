@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Nakshatra Query Finder</title>
-<link rel="stylesheet" href="assets/app.css?v=3">
+<link rel="stylesheet" href="assets/app.css?v=4">
 </head>
 <body>
 
@@ -22,23 +22,27 @@
     <h2>1 &middot; Setup</h2>
 
     <div class="warnbox">
-      Your API key stays in this browser only (<code>localStorage</code>) &mdash; it is never written
-      into these files and never uploaded anywhere except to Anthropic when a review runs.
-      Scans are sent to the Claude API to be read; nothing else leaves this machine.
+      Your API key stays in this browser only (<code>localStorage</code>) &mdash; never written into
+      these files, never sent anywhere but the AI provider you pick below. Page images of your
+      scans go to that provider to be read; nothing else leaves this machine.
     </div>
 
     <div class="row" style="align-items:flex-end">
-      <label class="fld" style="flex:1;min-width:280px;margin-bottom:0">
-        <span class="lbl">Anthropic API key</span>
+      <label class="fld" style="width:210px;margin-bottom:0">
+        <span class="lbl">AI provider</span>
+        <select id="provider"></select>
+      </label>
+      <label class="fld" style="flex:1;min-width:240px;margin-bottom:0">
+        <span class="lbl" id="keylbl">API key</span>
         <input type="password" id="key" placeholder="sk-ant-..." autocomplete="off">
       </label>
-      <button class="btn ghost sm" id="forget" style="margin-bottom:1px" title="Remove the saved key from this browser">Forget</button>
-      <label class="fld" style="width:190px;margin-bottom:0">
+      <button class="btn ghost sm" id="forget" style="margin-bottom:1px" title="Remove the saved key for this provider">Forget</button>
+    </div>
+
+    <div class="row" style="align-items:flex-end;margin-top:12px">
+      <label class="fld" style="width:260px;margin-bottom:0">
         <span class="lbl">Model</span>
-        <select id="model">
-          <option value="claude-opus-5">Opus 5 &mdash; most accurate</option>
-          <option value="claude-sonnet-5">Sonnet 5 &mdash; cheaper</option>
-        </select>
+        <select id="model"></select>
       </label>
       <label class="fld" style="width:150px;margin-bottom:0">
         <span class="lbl">Care level</span>
@@ -48,12 +52,15 @@
           <option value="medium">Medium</option>
         </select>
       </label>
+      <button class="btn ghost sm" id="testkey" style="margin-bottom:1px">Test key</button>
     </div>
-    <p class="note" style="margin-top:10px">
+
+    <p class="note" style="margin-top:12px">
       <span id="keystat"></span>
-      Get a key at <code>console.anthropic.com</code> &rarr; API keys. It is saved in this browser
-      and stays until you clear site data or press Forget &mdash; you only type it once.
+      Key from <code id="keyurl">console.anthropic.com</code>. Saved per provider in this browser,
+      kept until you clear site data or press Forget.
     </p>
+    <p class="note" id="provnote" style="margin-top:8px"></p>
   </section>
 
   <!-- ============ 2. FOLDER ============ -->
@@ -113,6 +120,6 @@
 
 </div>
 
-<script src="assets/app.js?v=3" type="module"></script>
+<script src="assets/app.js?v=4" type="module"></script>
 </body>
 </html>
