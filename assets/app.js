@@ -7,6 +7,7 @@
 import { groupByAgency, countPages, pages } from './scan.js?v=12';
 import { readBatch, collate, checkKey } from './audit.js?v=12';
 import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=12';
+import { loadLearned, forgetLearned } from './corpus.js?v=12';
 
 const $ = s => document.querySelector(s);
 
@@ -157,6 +158,44 @@ async function identify(key) {
 }
 
 function redrawCosts() { if (agencies.length) drawAgencies(); }
+
+/* ---------- learning from finished sheets -------------------------------- */
+function learnStatus() {
+  const n = loadLearned().length;
+  $('#learnstat').innerHTML = n
+    ? `<b style="color:var(--green)">${n}</b> imported example${n === 1 ? '' : 's'} in use`
+    : 'none imported yet — using the built-in examples';
+  $('#learnclear').classList.toggle('hide', !n);
+}
+learnStatus();
+
+$('#learnbtn').addEventListener('click', () => $('#learnfile').click());
+
+$('#learnfile').addEventListener('change', async e => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  $('#learnstat').textContent = 'reading…';
+  try {
+    const { importWorkbook } = await import('./import.js?v=12');
+    const r = await importWorkbook(file);
+    learnStatus();
+    $('#learnstat').innerHTML +=
+      ` &middot; added <b>${r.added}</b> of ${r.found} from ` +
+      esc(r.sheets.map(s => s.name).join(', '));
+  } catch (err) {
+    $('#learnstat').innerHTML =
+      `<b style="color:var(--red)">could not read that file — ${esc(err.message)}</b>`;
+  } finally {
+    e.target.value = '';
+  }
+});
+
+$('#learnclear').addEventListener('click', () => {
+  if (!confirm('Remove every example imported from your own sheets?\n\n' +
+               'The built-in examples stay.')) return;
+  forgetLearned();
+  learnStatus();
+});
 
 /* --------------------------------------------------------------------------
    Drop to the next-best model this key offers. Called when the current one
