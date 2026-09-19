@@ -270,7 +270,11 @@ export function resolveModel(providerId, available) {
         /* Ranking says which is best; only a real call says which WORKS.
            A free key is offered Pro models it has zero quota for, and
            withdrawn models still appear in the list. */
-        candidates: scored.slice(0, 8)
+        /* Deep enough to reach the older, stable models. On a free Gemini key
+           the newest model has the SMALLEST allowance — gemini-3.8-flash caps
+           at 20 requests — while 2.x flash and the lite variants run far
+           longer, so the fallback chain has to get all the way down to them. */
+        candidates: scored.slice(0, 14)
       };
     }
   }

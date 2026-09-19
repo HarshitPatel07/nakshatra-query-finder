@@ -4,13 +4,16 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=8';
-import { readBatch, consolidate, checkKey } from './audit.js?v=8';
-import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=8';
+import { groupByAgency, countPages, pages } from './scan.js?v=9';
+import { readBatch, consolidate, checkKey } from './audit.js?v=9';
+import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=9';
 
 const $ = s => document.querySelector(s);
 
-const BATCH = 6;          // pages per API call
+/* Pages per API call. Free-tier quotas count REQUESTS, not pages, so a bigger
+   batch is the cheapest way to make a 49-page folder fit: 5 calls instead of 9.
+   Ten pages is ~24k input tokens, comfortable in a 1M window. */
+const BATCH = 10;
 const KEY_STORE = 'nq.key';
 const EFFORT_STORE = 'nq.effort';
 const OVERRIDE_STORE = 'nq.override';
@@ -162,20 +165,27 @@ function redrawCosts() { if (agencies.length) drawAgencies(); }
    version answers immediately.
    Returns true if it switched.
    -------------------------------------------------------------------------- */
-async function stepDownModel() {
-  const list = detected?.candidates || [];
-  const at = list.indexOf(detected.model);
-  if (at === -1 || at + 1 >= list.length) return false;
+const deadModels = new Set();   // spent or refusing, for this session
 
-  for (const next of list.slice(at + 1)) {
+async function stepDownModel() {
+  const list = (detected?.candidates || []).filter(m => !deadModels.has(m));
+  const at = list.indexOf(detected.model);
+  const rest = at === -1 ? list : list.slice(at + 1);
+  if (!rest.length) return false;
+
+  for (const next of rest) {
     try {
       await checkKey({ provider: detected.provider, key: $('#key').value.trim(),
                        model: next, effort: 'low' });
-      log(`  switching from ${detected.label} to ${pretty(next)}`, 'warn');
+      log(`  switching to ${pretty(next)}`, 'warn');
       detected.model = next;
       detected.label = pretty(next);
+      strip(`Using <b>${esc(PROVIDERS[detected.provider].label)}</b> ` +
+            `<span class="pill">${esc(detected.label)}</span> — switched mid-run`);
       return true;
-    } catch { /* that one is no good either — keep walking down */ }
+    } catch (e) {
+      deadModels.add(next);       // don't come back to it later in this run
+    }
   }
   return false;
 }
@@ -383,10 +393,16 @@ async function run() {
           log(`  read ${chunk.length} pages — ${n} issue${n === 1 ? '' : 's'}`, n ? 'warn' : 'ok');
         } catch (e) {
           if (e.name === 'AbortError' || e.fatal) throw e;
-          log(`  batch failed: ${e.message}`, 'err');
-          /* A model that stays overloaded after every retry is not going to
-             carry a 50-page folder — move down to the next one that works. */
-          if (e.exhausted && await stepDownModel()) {
+          if (e.quotaCapped) {
+            log(`  ${detected.label} is out of free quota` +
+                (e.limit ? ` (${e.limit} requests)` : ''), 'err');
+            deadModels.add(detected.model);
+          } else {
+            log(`  batch failed: ${e.message}`, 'err');
+          }
+          /* A model that is spent, or still overloaded after every retry, is
+             not going to carry a 50-page folder — move to one with headroom. */
+          if ((e.quotaCapped || e.exhausted) && await stepDownModel()) {
             log(`  retrying these ${chunk.length} pages on ${detected.label}`, 'warn');
             buf = chunk.concat(buf);
             return;

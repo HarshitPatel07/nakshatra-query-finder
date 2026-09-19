@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=8';
+import { PROVIDERS } from './providers.js?v=9';
 import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
-         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=8';
+         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=9';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
@@ -196,17 +196,21 @@ async function call(cfg, system, content, signal) {
     let detail = '';
     try { detail = P.errorOf(await res.json()); } catch { /* non-JSON body */ }
 
-    /* An empty wallet, a bad key or a model with no quota never heals — stop
-       the run rather than failing page after page. */
-    const noQuota = /limit:\s*0/i.test(detail);
+    /* An empty wallet or a bad key never heals — stop the run outright. */
     const fatal = res.status === 401 || res.status === 403 ||
-                  (res.status === 429 && noQuota) ||
                   (res.status === 400 &&
                    /credit balance|billing|api key not valid|invalid.*api.?key/i.test(detail));
 
-    /* "High demand" and plain rate limits ARE temporary — the provider is
-       telling us to come back, so come back instead of dropping the pages. */
-    const worthRetrying = !fatal &&
+    /* A named quota ceiling ("limit: 20") is this MODEL's allowance, not a
+       passing spike. Waiting it out burns minutes and still fails, so the
+       caller should move to a model with more headroom instead of retrying.
+       Newer Gemini models carry the smallest free-tier quotas, so the model
+       that ranks best is often the one that runs out first. */
+    const quotaCapped = res.status === 429 && /limit:\s*\d+/i.test(detail);
+
+    /* "High demand" and unnamed rate limits ARE temporary — come back rather
+       than dropping the pages. */
+    const worthRetrying = !fatal && !quotaCapped &&
       (res.status === 503 || res.status === 429 || res.status >= 500);
 
     if (worthRetrying && attempt < MAX_TRIES) {
@@ -221,6 +225,8 @@ async function call(cfg, system, content, signal) {
     const err = new Error(`HTTP ${res.status}${detail ? ' — ' + detail : ''}`);
     err.fatal = fatal;
     err.status = res.status;
+    err.quotaCapped = quotaCapped;      // this model is spent — try another
+    err.limit = (/limit:\s*(\d+)/i.exec(detail) || [])[1];
     err.exhausted = worthRetrying;      // gave it every chance and it still failed
     throw err;
   }
