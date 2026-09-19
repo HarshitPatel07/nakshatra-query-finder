@@ -4,9 +4,9 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=10';
-import { readBatch, consolidate, checkKey } from './audit.js?v=10';
-import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=10';
+import { groupByAgency, countPages, pages } from './scan.js?v=11';
+import { readBatch, consolidate, checkKey } from './audit.js?v=11';
+import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=11';
 
 const $ = s => document.querySelector(s);
 
@@ -267,6 +267,58 @@ function cfg() {
   };
 }
 
+/* ---------- progress panel ----------------------------------------------
+   A batch can take a minute, so the panel has to keep saying something true
+   the whole time — what it is doing now, how far in, and how long is left.
+   ------------------------------------------------------------------------ */
+const prog = {
+  t0: 0, pages: 0, total: 0, issues: 0, failed: 0, agency: '', timer: null
+};
+
+function phase(text, working = true) {
+  $('#phase').textContent = text;
+  $('#spin').classList.toggle('done', !working);
+  $('#barwrap').classList.toggle('working', working);
+}
+
+function hhmm(sec) {
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return sec + 's';
+  const m = Math.floor(sec / 60);
+  return sec % 60 ? `${m}m ${sec % 60}s` : `${m}m`;
+}
+
+function paint() {
+  const { pages, total, issues, failed, t0 } = prog;
+  $('#pbar').style.width = total ? Math.round(pages / total * 100) + '%' : '0%';
+  $('#s-pages').textContent = `${pages} / ${total}`;
+  $('#s-agency').textContent = prog.agency || '—';
+  $('#s-issues').textContent = issues;
+  $('#s-failed').textContent = failed;
+  $('#s-failed-wrap').style.display = failed ? '' : 'none';
+
+  const el = (Date.now() - t0) / 1000;
+  $('#s-elapsed').textContent = hhmm(el);
+  /* estimate from actual throughput so far — honest, not a fixed guess */
+  $('#s-left').textContent = pages && pages < total
+    ? '~' + hhmm(el / pages * (total - pages))
+    : (pages >= total && total ? 'done' : '—');
+}
+
+function startProgress(total) {
+  Object.assign(prog, { t0: Date.now(), pages: 0, total, issues: 0, failed: 0, agency: '' });
+  clearInterval(prog.timer);
+  prog.timer = setInterval(paint, 1000);   // keeps elapsed ticking during a long call
+  paint();
+}
+
+function stopProgress(text) {
+  clearInterval(prog.timer);
+  prog.timer = null;
+  phase(text, false);
+  paint();
+}
+
 /* ---------- logging ----------------------------------------------------- */
 function log(msg, cls = '') {
   const el = $('#log');
@@ -373,14 +425,18 @@ async function run() {
   const totalPages = sel.reduce((n, a) => n + a.pages, 0);
   let done = 0;
   let failedPages = 0;      // pages that never got read, after every retry
+  startProgress(totalPages);
 
   try {
     for (const agency of sel) {
       if (abort.signal.aborted) break;
       log(`— ${agency.name} (${agency.pages} pages) via ${PROVIDERS[C.provider].label} ${detected.label} —`);
+      prog.agency = agency.name;
+      phase(`Opening ${agency.name}`);
 
       const findings = [];
       let buf = [];
+      let batchNo = 0;
       let splitTo = BATCH;      // shrinks if replies keep overflowing
 
       const flush = async (force) => {
@@ -397,11 +453,18 @@ async function run() {
       };
 
       const run1 = async (chunk) => {
+        batchNo++;
+        phase(`Reading pages ${prog.pages + 1}–${prog.pages + chunk.length} of ` +
+              `${agency.name} · ${detected.label}`);
+        $('#pstat').textContent =
+          `batch ${batchNo} · ${chunk.length} pages · ${chunk[0].label}` +
+          (chunk.length > 1 ? ` → ${chunk[chunk.length - 1].label}` : '');
         try {
           const got = await readBatch(
-            { ...C, onRetry: m => log('  ' + m, 'warn') }, chunk, abort.signal);
+            { ...C, onRetry: m => { log('  ' + m, 'warn'); phase(m); } }, chunk, abort.signal);
           findings.push(...got);
           const n = got.reduce((s, g) => s + g.issues.length, 0);
+          prog.issues += n;
           log(`  read ${chunk.length} pages — ${n} issue${n === 1 ? '' : 's'}`, n ? 'warn' : 'ok');
         } catch (e) {
           if (e.name === 'AbortError' || e.fatal) throw e;
@@ -430,23 +493,30 @@ async function run() {
             return;
           }
           failedPages += chunk.length;
+          prog.failed = failedPages;
         }
         done += chunk.length;
-        $('#pbar').style.width = Math.round(done / totalPages * 100) + '%';
-        $('#pstat').textContent = `${done} of ${totalPages} pages`;
+        prog.pages = done;
+        paint();
       };
 
       for await (const pg of pages(agency, { signal: abort.signal })) {
         if (abort.signal.aborted) break;
-        if (pg.error) { log(`  skip ${pg.label}: ${pg.error}`, 'err'); done++; continue; }
+        if (pg.error) {
+          log(`  skip ${pg.label}: ${pg.error}`, 'err');
+          done++; prog.pages = done; prog.failed = ++failedPages; paint();
+          continue;
+        }
+        if (!buf.length) phase(`Preparing ${pg.label}`);
         buf.push(pg);
         if (buf.length >= BATCH) await flush();
       }
-      await flush();
+      await flush(true);
 
       if (abort.signal.aborted) break;
 
-      log('  consolidating…');
+      phase(`Writing up ${agency.name}`);
+      log('  collating findings into queries…');
       try {
         const summary = await consolidate(C, agency.name, findings, abort.signal);
         results.push({ agency: agency.name, pages: findings.length, ...summary });
@@ -464,12 +534,16 @@ async function run() {
     if (failedPages) {
       log(`WARNING: ${failedPages} page(s) were never read — the observations ` +
           `below are incomplete. Re-run to cover them.`, 'err');
+      stopProgress(`Finished with ${failedPages} page(s) unread — results are incomplete`);
+    } else {
+      stopProgress(`Done — ${prog.issues} issue(s) across ${prog.pages} pages ` +
+                   `in ${hhmm((Date.now() - prog.t0) / 1000)}`);
     }
     render();
   } catch (e) {
-    if (e.name === 'AbortError') log('stopped — showing what was read', 'warn');
-    else if (e.fatal) log('STOPPED: ' + e.message, 'err');
-    else log('failed: ' + e.message, 'err');
+    if (e.name === 'AbortError') { log('stopped — showing what was read', 'warn'); stopProgress('Stopped'); }
+    else if (e.fatal) { log('STOPPED: ' + e.message, 'err'); stopProgress('Stopped: ' + e.message); }
+    else { log('failed: ' + e.message, 'err'); stopProgress('Failed: ' + e.message); }
 
     if (e.fatal) {
       log(results.length
