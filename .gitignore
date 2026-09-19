@@ -11,3 +11,9 @@ output/
 .DS_Store
 Thumbs.db
 __pycache__/
+
+# never commit extracted client data
+_corpus.json
+_seed_block.js
+*.xlsx
+*.csv

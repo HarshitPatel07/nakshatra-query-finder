@@ -3,7 +3,73 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=7';
+import { PROVIDERS } from './providers.js?v=8';
+import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
+         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=8';
+
+/* --------------------------------------------------------------------------
+   The read prompt is built fresh each run so that examples imported since the
+   last run are actually used.
+   -------------------------------------------------------------------------- */
+function buildReadSystem() {
+  const docs = DOCUMENTS.map(d =>
+    `- ${d.name}  [category: ${d.cat}]\n` +
+    `    fields that are commonly blank: ${d.fields.join(', ')}\n` +
+    (d.who ? `    name the person as: (${d.who} -:<name>)\n` : '') +
+    (d.monthly ? `    this page repeats per month — say which month is at fault\n` : '')
+  ).join('');
+
+  const standing = STANDING_CHECKS.map(s => `- ${s.when}\n    write: ${s.say}`).join('\n');
+
+  const examples = pickExamples(24)
+    .map(e => `[${e.cat}] ${e.obs}`).join('\n');
+
+  return `You are a chartered accountant auditing an Axis Bank collection agency under the
+Nakshatra programme. You are shown photographed pages of the agency's NAKSHATRA MANUAL —
+a printed register book filled in by hand — plus supporting declarations.
+
+Your job on each page is narrow and specific: find CELLS THAT SHOULD BE FILLED IN AND ARE NOT,
+or are filled in wrongly. For each one you must capture four things, because the query cannot
+be written without them:
+  1. WHICH DOCUMENT the page is
+  2. WHICH FIELD is blank or wrong
+  3. WHOSE ROW it is — the Collection Manager or Executive named on that line
+  4. WHICH MONTH the page covers, when the page is a monthly one
+
+THE DOCUMENTS TO EXPECT
+${docs}
+CHECKS THAT ARE NOT ABOUT A BLANK CELL
+${standing}
+
+HOW A QUERY IS WORDED — these are real signed-off queries from this firm. Match this
+voice, this level of detail, and this punctuation exactly:
+${examples}
+
+Month style: ${MONTH_STYLE}
+
+HARD RULES
+- NEVER state a month, a name, an ID or a date you cannot actually read on the page.
+  If the month is not legible, set "month" to "" — do not guess. A wrong month is worse
+  than no month, because it is sent to the bank.
+- Report one issue per blank field per person. Do NOT bundle several fields into one issue,
+  and do NOT summarise as "several entries are incomplete" — this firm writes a separate
+  query for each.
+- A page with nothing wrong gets an empty issues array. Do not manufacture findings.
+- Only use these categories: ${CATEGORIES.join(' | ')}
+
+Reply with ONLY a JSON object, no prose and no code fence:
+{"pages":[{"page":<1-based number within THIS batch>,
+  "doc":"<which document this page is>",
+  "month":"<e.g. Jun'26, or empty if not legible>",
+  "issues":[{"document":"<document name as listed above>",
+             "field":"<the exact field that is blank or wrong>",
+             "who":"<the CM or Executive named on that row, or empty>",
+             "whoLabel":"<CM Name | Executive Name | LAN No. | empty>",
+             "month":"<month this defect relates to, or empty>",
+             "wrong":<true if filled in but incorrect, false if simply blank>,
+             "category":"<one of the categories above>",
+             "note":"<only if this is a standing check rather than a blank cell>"}]}]}`;
+}
 
 /* --------------------------------------------------------------------------
    What an Axis Nakshatra agency audit actually checks. Derived from the real
@@ -47,7 +113,7 @@ PREMISES & STAFF
 - Recovery agent ID cards, police verification, training/IIBF certificates where shown.
 `.trim();
 
-const READ_SYS = `You are a chartered accountant performing an Axis Bank Nakshatra agency audit.
+const UNUSED_READ_SYS = `You are a chartered accountant performing an Axis Bank Nakshatra agency audit.
 You are being shown scanned pages of an agency's evidence pack: handwritten registers,
 signed declarations, no-dues certificates and photographs of the agency premises.
 
@@ -160,6 +226,40 @@ async function call(cfg, system, content, signal) {
   }
 }
 
+/* --------------------------------------------------------------------------
+   Build the house sentence from the parts the model extracted, rather than
+   asking it to write prose. The template is fixed, so the wording cannot drift:
+
+     <Document> was not filled up properly in the Nakshatra Manual
+       [for the month of <MONTHS>]. (i.e. <Field>)(<WhoLabel> -:<Who>)
+   -------------------------------------------------------------------------- */
+export function phrase(issue) {
+  const doc = (issue.document || '').trim();
+  if (!doc) return null;
+
+  /* the stem is per-document and learned from the firm's own sheets */
+  let stem = STEMS[doc];
+  if (issue.wrong) {
+    stem = WRONG_STEMS[doc] ||
+      (stem || DEFAULT_STEM).replace(/was not (properly filled up|filled up properly)/,
+                                     'was wrongly filled up');
+  }
+  stem = stem || DEFAULT_STEM;
+
+  let s = `${doc} ${stem}`;
+  if (issue.month) s += ` for the month of ${issue.month}`;
+  s += '.';
+  if (issue.field) s += ` (i.e. ${issue.field})`;
+  if (issue.who) s += `(${issue.whoLabel || 'CM Name'} -:${issue.who})`;
+  return s;
+}
+
+/* Two issues are the same query when document, field, person and month match. */
+export function issueKey(i) {
+  return [i.document, i.field, i.who, i.month]
+    .map(x => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim()).join('|');
+}
+
 /* Models sometimes wrap JSON in a fence or add a stray sentence. Dig it out. */
 function parseJson(text) {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -182,19 +282,99 @@ export async function readBatch(cfg, batch, signal) {
   });
   content.push({ text: `Report on all ${batch.length} page(s) above, in order.` });
 
-  const text = await call(cfg, READ_SYS, content, signal);
+  const text = await call(cfg, buildReadSystem(), content, signal);
 
   const out = parseJson(text);
   return (out.pages || []).map(p => ({
     label: batch[(p.page || 1) - 1]?.label || batch[0]?.label || '?',
     doc: p.doc || '',
-    issues: Array.isArray(p.issues) ? p.issues : []
+    month: p.month || '',
+    issues: (Array.isArray(p.issues) ? p.issues : []).map(i => ({
+      ...i,
+      category: canonCat(i.category),
+      month: i.month || p.month || '',
+      text: i.note || phrase(i) || i.text || ''
+    })).filter(i => i.text)
   }));
 }
 
 /* --------------------------------------------------------------------------
    Consolidate every page finding into the final observation list.
    -------------------------------------------------------------------------- */
+/* --------------------------------------------------------------------------
+   Turn page findings into sheet rows — locally, with no model call.
+
+   The firm writes ONE ROW PER DEFECT, so nothing is summarised away. The only
+   merging done is the merging the auditors themselves do:
+     · same document + field + month, several people  ->  names joined
+     · same document + field + people, several months ->  months joined
+   -------------------------------------------------------------------------- */
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+function monthOrder(m) {
+  const x = /([A-Za-z]{3})[a-z]*'?(\d{2})/.exec(m || '');
+  if (!x) return 9999;
+  const i = MONTHS.findIndex(n => n.toLowerCase() === x[1].toLowerCase());
+  return (+x[2]) * 12 + (i < 0 ? 0 : i);
+}
+
+function joinNames(list) {
+  const u = [...new Set(list.filter(Boolean))];
+  if (u.length <= 1) return u[0] || '';
+  return u.slice(0, -1).join(', ') + ' & ' + u[u.length - 1];
+}
+
+function joinMonths(list) {
+  const u = [...new Set(list.filter(Boolean))].sort((a, b) => monthOrder(a) - monthOrder(b));
+  if (u.length <= 1) return u[0] || '';
+  /* a clean run of consecutive months is written "Apr'26 to Jun'26" */
+  const run = u.every((m, i) => i === 0 || monthOrder(m) === monthOrder(u[i - 1]) + 1);
+  if (run && u.length > 2) return `${u[0]} to ${u[u.length - 1]}`;
+  return u.slice(0, -1).join(', ') + ' & ' + u[u.length - 1];
+}
+
+export function collate(findings) {
+  const flat = [];
+  findings.forEach(f => (f.issues || []).forEach(i =>
+    flat.push({ ...i, source: f.label })));
+
+  /* pass 1 — same document+field+month, different people */
+  const byDFM = new Map();
+  for (const i of flat) {
+    const k = [i.document, i.field, i.month].map(x => String(x || '').toLowerCase().trim()).join('|');
+    if (!byDFM.has(k)) byDFM.set(k, { ...i, whos: [], sources: [] });
+    const g = byDFM.get(k);
+    if (i.who) g.whos.push(i.who);
+    g.sources.push(i.source);
+  }
+
+  /* pass 2 — same document+field+people, different months */
+  const byDFW = new Map();
+  for (const g of byDFM.values()) {
+    const names = joinNames(g.whos);
+    const k = [g.document, g.field, names].map(x => String(x || '').toLowerCase().trim()).join('|');
+    if (!byDFW.has(k)) byDFW.set(k, { ...g, names, months: [], sources: [] });
+    const h = byDFW.get(k);
+    if (g.month) h.months.push(g.month);
+    h.sources.push(...g.sources);
+  }
+
+  return [...byDFW.values()].map(g => {
+    const issue = { ...g, who: g.names, month: joinMonths(g.months) };
+    return {
+      category: canonCat(g.category) || 'Process Management',
+      text: g.note || phrase(issue) || g.text || '',
+      document: g.document || '',
+      field: g.field || '',
+      who: g.names || '',
+      month: issue.month,
+      sources: [...new Set(g.sources)]
+    };
+  }).filter(r => r.text)
+    .sort((a, b) => (a.category || '').localeCompare(b.category || '') ||
+                    (a.document || '').localeCompare(b.document || ''));
+}
+
 export async function consolidate(cfg, agencyName, findings, signal) {
   const lines = findings
     .filter(f => f.issues.length)

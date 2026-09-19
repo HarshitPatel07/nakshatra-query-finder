@@ -4,9 +4,9 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=7';
-import { readBatch, consolidate, checkKey } from './audit.js?v=7';
-import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=7';
+import { groupByAgency, countPages, pages } from './scan.js?v=8';
+import { readBatch, consolidate, checkKey } from './audit.js?v=8';
+import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=8';
 
 const $ = s => document.querySelector(s);
 
