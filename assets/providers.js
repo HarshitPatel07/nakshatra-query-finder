@@ -140,9 +140,26 @@ export const PROVIDERS = {
     note: 'Verified working, and the only one with a genuinely free tier. ' +
           'On the FREE tier Google may use what you send to improve their models — ' +
           'do not send client audit evidence through it. Paid tier does not train on your data.',
-    keyPattern: /^AIza/,
+    /* Google issues "AIza…" and "AQ.…" — a hint for probe order, never a test. */
+    keyPattern: /^(AIza|AQ\.)/,
 
-    prefer: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'],
+    prefer: ['gemini-pro-latest', 'gemini-2.5-pro', 'gemini-flash-latest', 'gemini-2.5-flash'],
+
+    /* Google ships new Gemini versions constantly, so score the id instead of
+       maintaining a list that is stale the week after it is written. */
+    excludeRe: /(image|tts|transcribe|audio|music|lyria|nano-banana|robotics|computer-use|deep-research|antigravity|embedding|aqa|gemma|learnlm|omni)/i,
+    rank(id) {
+      /* the "-latest" aliases always resolve to Google's current best */
+      if (id === 'gemini-pro-latest') return 1e7;
+      if (id === 'gemini-flash-latest') return 9e6;
+
+      const m = id.match(/^gemini-(\d+(?:\.\d+)?)-(pro|flash)(-lite)?/);
+      if (!m) return -1;
+      const version = parseFloat(m[1]);
+      const tier = m[2] === 'pro' ? 300 : (m[3] ? 100 : 200);
+      const stable = /preview|exp|-\d{2}-\d{4}$/.test(id) ? 0 : 10;
+      return version * 1000 + tier + stable;
+    },
     listUrl: key => `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,
     listHeaders: () => ({}),
     parseList: j => (j.models || [])
@@ -188,17 +205,33 @@ export const PROVIDERS = {
 export const DEFAULT_PROVIDER = 'gemini';
 
 /* --------------------------------------------------------------------------
-   Work out the provider from the shape of the key. Anthropic and Gemini carry
-   unmistakable prefixes; OpenAI's plain "sk-" is the catch-all, so it is
-   tested last.
+   Work out the provider by ASKING each one, not by reading the key's prefix.
+   Google alone issues both "AIza…" and "AQ.…" keys, and vendors add new
+   formats whenever they like — so the prefix is only a hint for what to try
+   first. Whoever answers 200 owns the key.
+
+   Returns { provider, models } — the model list comes free with the probe,
+   so resolveModel never has to fetch it twice.
    -------------------------------------------------------------------------- */
-export function detectProvider(key) {
+export async function detectProvider(key, signal) {
   const k = (key || '').trim();
   if (!k) return null;
-  for (const id of ['anthropic', 'gemini']) {
-    if (PROVIDERS[id].keyPattern.test(k)) return id;
-  }
-  return PROVIDERS.openai.keyPattern.test(k) ? 'openai' : null;
+
+  /* try the likely one first, but never trust it enough to skip the others */
+  const order = Object.keys(PROVIDERS).sort((a, b) =>
+    (PROVIDERS[b].keyPattern.test(k) ? 1 : 0) - (PROVIDERS[a].keyPattern.test(k) ? 1 : 0));
+
+  const attempts = order.map(async id => {
+    const P = PROVIDERS[id];
+    const res = await fetch(P.listUrl(k), { headers: P.listHeaders(k), signal });
+    if (!res.ok) throw new Error(id + ' rejected');
+    return { provider: id, models: P.parseList(await res.json()) };
+  });
+
+  /* first success wins; if every one fails we genuinely don't know the key */
+  const results = await Promise.allSettled(attempts);
+  for (const r of results) if (r.status === 'fulfilled') return r.value;
+  return null;
 }
 
 /* --------------------------------------------------------------------------
@@ -207,50 +240,68 @@ export function detectProvider(key) {
    cannot list models (some keys are scoped without that permission).
    Returns { model, label, detected, note }.
    -------------------------------------------------------------------------- */
-export async function resolveModel(providerId, key, signal) {
+export function resolveModel(providerId, available) {
   const P = PROVIDERS[providerId];
-  const best = id => P.models.find(m => m.id === id);
+  const named = id => P.models.find(m => m.id === id);
 
-  let available = null;
-  try {
-    const res = await fetch(P.listUrl(key), { headers: P.listHeaders(key), signal });
-    if (res.ok) available = P.parseList(await res.json());
-  } catch (e) {
-    if (e.name === 'AbortError') throw e;
-    /* listing is a convenience, never a blocker */
-  }
-
-  if (available && available.length) {
-    /* exact match first, then a prefix match so dated snapshots still count */
-    for (const want of P.prefer) {
-      if (available.includes(want)) {
-        return { model: want, label: best(want)?.label || want, detected: true };
-      }
-      const snap = available.find(a => a.startsWith(want + '-') || a.startsWith(want));
-      if (snap) return { model: snap, label: best(want)?.label || snap, detected: true };
-    }
+  if (!available || !available.length) {
+    const fb = P.prefer[0];
     return {
-      model: available[0],
-      label: available[0],
-      detected: true,
-      note: 'none of the known models were offered — using the first available'
+      model: fb, label: named(fb)?.label || fb, detected: false,
+      note: 'this key could not list its models — assuming the best one'
     };
   }
 
-  const fb = P.prefer[0];
+  /* A provider with a ranker scores every model it is actually offered, so a
+     version released after this code was written still wins on merit. */
+  if (P.rank) {
+    const scored = available
+      .filter(id => !P.excludeRe?.test(id))
+      .map(id => ({ id, score: P.rank(id) }))
+      .filter(x => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map(x => x.id);
+
+    if (scored.length) {
+      return {
+        model: scored[0],
+        label: named(scored[0])?.label || pretty(scored[0]),
+        detected: true,
+        /* Ranking says which is best; only a real call says which WORKS.
+           A free key is offered Pro models it has zero quota for, and
+           withdrawn models still appear in the list. */
+        candidates: scored.slice(0, 8)
+      };
+    }
+  }
+
+  /* otherwise walk the explicit preference list, allowing dated snapshots */
+  for (const want of P.prefer) {
+    if (available.includes(want)) {
+      return { model: want, label: named(want)?.label || pretty(want), detected: true };
+    }
+    const snap = available.find(a => a.startsWith(want + '-'));
+    if (snap) return { model: snap, label: named(want)?.label || pretty(snap), detected: true };
+  }
+
   return {
-    model: fb,
-    label: best(fb)?.label || fb,
-    detected: false,
-    note: 'could not list models for this key — assuming the best one'
+    model: available[0], label: pretty(available[0]), detected: true,
+    note: 'none of the familiar models were offered — using the first available'
   };
+}
+
+/* "gemini-3.1-pro-preview" -> "Gemini 3.1 Pro Preview" */
+function pretty(id) {
+  return String(id)
+    .replace(/[-_]/g, ' ')
+    .replace(/\b([a-z])/g, c => c.toUpperCase())
+    .replace(/\bGpt\b/, 'GPT');
 }
 
 /* Roughly (w x h)/750 tokens per page; good enough to price a folder. */
 export function estimateCost(pageCount, providerId, modelId) {
-  const p = PROVIDERS[providerId];
-  const m = p?.models.find(x => x.id === modelId) || p?.models[0];
-  if (!m) return 0;
+  const m = PROVIDERS[providerId]?.models.find(x => x.id === modelId);
+  if (!m) return null;                 // auto-picked a model with no rate on file
   const inTok = pageCount * (2450 + 120);
   const outTok = pageCount * 170;
   return (inTok * m.in + outTok * m.out) / 1e6;

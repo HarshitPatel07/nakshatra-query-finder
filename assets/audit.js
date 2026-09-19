@@ -3,7 +3,7 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=5';
+import { PROVIDERS } from './providers.js?v=6';
 
 /* --------------------------------------------------------------------------
    What an Axis Nakshatra agency audit actually checks. Derived from the real

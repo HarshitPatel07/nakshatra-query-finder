@@ -4,9 +4,9 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=5';
-import { readBatch, consolidate } from './audit.js?v=5';
-import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=5';
+import { groupByAgency, countPages, pages } from './scan.js?v=6';
+import { readBatch, consolidate, checkKey } from './audit.js?v=6';
+import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=6';
 
 const $ = s => document.querySelector(s);
 
@@ -67,48 +67,85 @@ async function identify(key) {
 
   if (!key) { strip(''); redrawCosts(); return; }
 
-  const id = detectProvider(key);
-  if (!id) {
-    strip('Key not recognised. Expected <b>sk-ant-…</b> (Claude), ' +
-          '<b>sk-…</b> (OpenAI) or <b>AIza…</b> (Gemini).', 'bad');
+  strip('Checking this key&hellip;', 'busy');
+
+  lookup = new AbortController();
+  let found;
+  try {
+    found = await detectProvider(key, lookup.signal);
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    found = null;
+  }
+
+  if (!found) {
+    strip('No provider accepted this key. Check it was copied whole, and that ' +
+          'it is an <b>API</b> key rather than a password or a ChatGPT login.', 'bad');
     redrawCosts();
     return;
   }
 
+  const id = found.provider;
   const P = PROVIDERS[id];
-  strip(`Recognised <b>${esc(P.label)}</b> — finding the best model…`, 'busy');
-
-  lookup = new AbortController();
-  let pick;
-  try {
-    pick = await resolveModel(id, key, lookup.signal);
-  } catch (e) {
-    if (e.name === 'AbortError') return;
-    pick = null;
-  }
-  if (!pick) { strip(`Recognised <b>${esc(P.label)}</b>, but the model list failed.`, 'bad'); return; }
-
+  const pick = resolveModel(id, found.models);
   detected = { provider: id, ...pick };
+
+  /* Being offered a model is not the same as being able to use it: a free key
+     lists Pro models it has zero quota for, and withdrawn models linger in the
+     list. Try each in turn and keep the first that actually answers. */
+  const tried = [];
+  for (const candidate of (pick.candidates || [pick.model]).slice(0, 6)) {
+    strip(`Trying <b>${esc(pretty(candidate))}</b>&hellip;`, 'busy');
+    try {
+      await checkKey({ provider: id, key, model: candidate, effort: 'low' }, lookup.signal);
+      detected.model = candidate;
+      detected.label = pretty(candidate);
+      detected.rejected = tried;
+      break;
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      tried.push({ model: candidate, why: shortWhy(e.message) });
+      detected.model = null;
+    }
+  }
+
+  if (!detected.model) {
+    strip(`<b>${esc(P.label)}</b> accepted the key, but no model would run: ` +
+          esc(tried.map(t => `${pretty(t.model)} (${t.why})`).join(', ')), 'bad');
+    detected = null;
+    redrawCosts();
+    return;
+  }
 
   /* an explicit override outlives the auto-pick */
   const ov = store.get(OVERRIDE_STORE);
-  if (ov && P.models.some(m => m.id === ov)) {
+  if (ov && (found.models || []).includes(ov)) {
     detected.model = ov;
-    detected.label = P.models.find(m => m.id === ov).label;
+    detected.label = P.models.find(m => m.id === ov)?.label || ov;
     detected.overridden = true;
   }
 
-  $('#model').innerHTML = P.models
-    .map(m => `<option value="${m.id}">${esc(m.label)}</option>`).join('');
+  /* the override list is what this key really offers, best first, with the
+     obviously-wrong modalities (image, speech, music) left out */
+  const usable = (found.models || [])
+    .filter(m => !P.excludeRe?.test(m))
+    .sort((a, b) => (P.rank ? P.rank(b) - P.rank(a) : 0));
+  const opts = usable.length ? usable : P.models.map(m => m.id);
+  if (!opts.includes(detected.model)) opts.unshift(detected.model);
+
+  $('#model').innerHTML = opts
+    .map(id => `<option value="${id}">${esc(id)}</option>`).join('');
   $('#model').value = detected.model;
+
+  const skipped = detected.rejected?.length
+    ? ` <i>skipped ${esc(detected.rejected.map(t => pretty(t.model)).join(', '))}</i>`
+    : '';
 
   strip(
     `Using <b>${esc(P.label)}</b> <span class="pill">${esc(detected.label)}</span>` +
     (detected.overridden ? ' <i>(your choice)</i>'
-      : detected.detected ? ' — best model this key can reach'
-      : ' — assumed best; this key cannot list models') +
-    (pick.note && !detected.overridden ? ` <i>${esc(pick.note)}</i>` : ''),
-    detected.detected || detected.overridden ? '' : 'busy'
+      : ' — best model this key can actually run') + skipped +
+    (pick.note && !detected.overridden ? ` <i>${esc(pick.note)}</i>` : '')
   );
 
   $('#provnote').innerHTML = esc(P.note);
@@ -117,6 +154,22 @@ async function identify(key) {
 }
 
 function redrawCosts() { if (agencies.length) drawAgencies(); }
+
+/* "gemini-3.5-flash" -> "Gemini 3.5 Flash" */
+function pretty(id) {
+  return String(id).replace(/[-_]/g, ' ')
+    .replace(/\b([a-z])/g, c => c.toUpperCase())
+    .replace(/\bGpt\b/, 'GPT');
+}
+
+/* the one useful clause out of a long provider error */
+function shortWhy(msg) {
+  if (/limit: 0|quota/i.test(msg)) return 'no quota on this plan';
+  if (/no longer available|404/i.test(msg)) return 'withdrawn';
+  if (/503|high demand/i.test(msg)) return 'overloaded';
+  if (/429/.test(msg)) return 'rate limited';
+  return (msg.split('—')[1] || msg).trim().slice(0, 40);
+}
 
 /* restore */
 (function restore() {
@@ -219,7 +272,7 @@ function drawAgencies() {
       <td><span class="agency-name">${esc(a.name)}</span></td>
       <td class="meta">${a.files.length} file${a.files.length > 1 ? 's' : ''}</td>
       <td class="num">${a.pages}</td>
-      <td class="num">${prov && model ? money(estimateCost(a.pages, prov, model)) : '—'}</td>
+      <td class="num">${prov && model ? money(estimateCost(a.pages, prov, model)) : '&mdash;'}</td>
     </tr>`).join('');
 
   $('#agency-rows').querySelectorAll('.pick')
@@ -236,22 +289,25 @@ function picked() {
 /* A free-tier model prices at zero — say "free", not "$0.00".
    With no key yet there is no rate to quote, so say nothing rather than $0. */
 function money(v) {
-  if (v === null) return 'cost shown once a key is added';
+  if (v === undefined) return 'cost shown once a key is added';
+  if (v === null) return 'rate not on file';
   return v === 0 ? 'free' : '$' + v.toFixed(2);
 }
 
 function cost(pages) {
-  if (!detected) return null;
+  if (!detected) return undefined;
   return estimateCost(pages, detected.provider, detected.model);
 }
 
 function totals() {
   const sel = picked();
   const p = sel.reduce((n, a) => n + a.pages, 0);
-  const c = detected ? sel.reduce((n, a) => n + cost(a.pages), 0) : null;
+  const each = sel.map(a => cost(a.pages));
+  const known = each.every(v => typeof v === 'number');
+  const c = known ? each.reduce((n, v) => n + v, 0) : (detected ? null : undefined);
   $('#tot-line').textContent =
     `${sel.length} agency folder${sel.length === 1 ? '' : 's'} · ${p} pages · ` +
-    (c === null ? money(null) : 'about ' + money(c));
+    (typeof c === 'number' ? 'about ' + money(c) : money(c));
   $('#run').disabled = !sel.length;
 }
 
