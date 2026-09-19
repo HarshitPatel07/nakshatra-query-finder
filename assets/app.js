@@ -4,9 +4,9 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=9';
-import { readBatch, consolidate, checkKey } from './audit.js?v=9';
-import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=9';
+import { groupByAgency, countPages, pages } from './scan.js?v=10';
+import { readBatch, consolidate, checkKey } from './audit.js?v=10';
+import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=10';
 
 const $ = s => document.querySelector(s);
 
@@ -381,10 +381,22 @@ async function run() {
 
       const findings = [];
       let buf = [];
+      let splitTo = BATCH;      // shrinks if replies keep overflowing
 
-      const flush = async () => {
+      const flush = async (force) => {
         if (!buf.length) return;
+        if (!force && buf.length > splitTo) {
+          /* respect a reduced size after an overflow */
+          const chunk = buf.slice(0, splitTo);
+          buf = buf.slice(splitTo);
+          await run1(chunk);
+          return flush(force);
+        }
         const chunk = buf; buf = [];
+        await run1(chunk);
+      };
+
+      const run1 = async (chunk) => {
         try {
           const got = await readBatch(
             { ...C, onRetry: m => log('  ' + m, 'warn') }, chunk, abort.signal);
@@ -393,6 +405,16 @@ async function run() {
           log(`  read ${chunk.length} pages — ${n} issue${n === 1 ? '' : 's'}`, n ? 'warn' : 'ok');
         } catch (e) {
           if (e.name === 'AbortError' || e.fatal) throw e;
+          /* Too many findings to fit in one reply — halve the batch and let
+             both halves go round again rather than losing the pages. */
+          if (e.splittable && chunk.length > 1) {
+            const half = Math.ceil(chunk.length / 2);
+            log(`  reply too long for ${chunk.length} pages — splitting into ${half} + ${chunk.length - half}`, 'warn');
+            buf = chunk.slice(0, half).concat(chunk.slice(half), buf);
+            splitTo = Math.max(2, half);
+            return;
+          }
+
           if (e.quotaCapped) {
             log(`  ${detected.label} is out of free quota` +
                 (e.limit ? ` (${e.limit} requests)` : ''), 'err');

@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=9';
+import { PROVIDERS } from './providers.js?v=10';
 import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
-         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=9';
+         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=10';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
@@ -158,7 +158,14 @@ Reply with ONLY a JSON object, no prose and no code fence:
 
 /* -------------------------------------------------------------------------- */
 
-const MAX_TRIES = 5;
+/* How hard to push before handing the batch back to the caller.
+
+   A 503 means this model is busy right now — another model is almost always
+   quicker than waiting, so give it one short retry and move on. A 429 with no
+   named ceiling is a per-minute limit that genuinely does clear, and switching
+   model would hit the same account limit, so that one is worth waiting out. */
+const TRIES_BUSY = 2;
+const TRIES_RATE = 4;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 /* "Please retry in 54.05s" — providers often say exactly how long to wait. */
@@ -213,10 +220,14 @@ async function call(cfg, system, content, signal) {
     const worthRetrying = !fatal && !quotaCapped &&
       (res.status === 503 || res.status === 429 || res.status >= 500);
 
-    if (worthRetrying && attempt < MAX_TRIES) {
-      const wait = hintedDelay(detail) || Math.min(2000 * 2 ** (attempt - 1), 30000);
-      cfg.onRetry?.(`${res.status === 503 ? 'busy' : 'rate limited'}, waiting ` +
-                    `${Math.round(wait / 1000)}s (try ${attempt + 1} of ${MAX_TRIES})`);
+    const busy = res.status === 503;
+    const tries = busy ? TRIES_BUSY : TRIES_RATE;
+
+    if (worthRetrying && attempt < tries) {
+      const wait = busy ? 1500
+                        : (hintedDelay(detail) || Math.min(2000 * 2 ** (attempt - 1), 30000));
+      cfg.onRetry?.(`${busy ? 'busy' : 'rate limited'}, waiting ` +
+                    `${Math.round(wait / 1000)}s (try ${attempt + 1} of ${tries})`);
       await sleep(wait);
       if (signal?.aborted) { const a = new Error('aborted'); a.name = 'AbortError'; throw a; }
       continue;
@@ -270,9 +281,45 @@ export function issueKey(i) {
 function parseJson(text) {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const raw = fenced ? fenced[1] : text;
-  const s = raw.indexOf('{'), e = raw.lastIndexOf('}');
-  if (s === -1 || e === -1) throw new Error('no JSON in reply');
-  return JSON.parse(raw.slice(s, e + 1));
+  const s = raw.indexOf('{');
+  if (s === -1) {
+    const err = new Error('no JSON in reply');
+    err.splittable = true;
+    throw err;
+  }
+
+  const e = raw.lastIndexOf('}');
+  if (e > s) {
+    try { return JSON.parse(raw.slice(s, e + 1)); } catch { /* fall through to salvage */ }
+  }
+
+  /* A reply cut off at max_tokens leaves valid objects followed by a half-
+     written one. Rather than lose the whole batch, close the brackets that
+     are still open and keep the pages that did come through. */
+  const body = raw.slice(s);
+  const cut = body.lastIndexOf('},');
+  if (cut > 0) {
+    const stack = [];
+    const head = body.slice(0, cut + 1);
+    let inStr = false, esc = false;
+    for (const ch of head) {
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{' || ch === '[') stack.push(ch === '{' ? '}' : ']');
+      else if (ch === '}' || ch === ']') stack.pop();
+    }
+    try {
+      const fixed = JSON.parse(head + stack.reverse().join(''));
+      fixed.__truncated = true;
+      return fixed;
+    } catch { /* salvage failed too */ }
+  }
+
+  const err = new Error('reply was cut off mid-answer');
+  err.splittable = true;
+  throw err;
 }
 
 

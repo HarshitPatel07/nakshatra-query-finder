@@ -51,7 +51,7 @@ export const PROVIDERS = {
         : { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: c.image } });
 
       const body = {
-        model, max_tokens: 8000, system,
+        model, max_tokens: 16000, system,
         messages: [{ role: 'user', content: parts }],
         output_config: { effort }
       };
@@ -112,7 +112,7 @@ export const PROVIDERS = {
         headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
         body: {
           model,
-          max_tokens: 8000,
+          max_tokens: 16000,
           messages: [
             { role: 'system', content: system },
             { role: 'user', content: parts }
@@ -184,7 +184,7 @@ export const PROVIDERS = {
         body: {
           system_instruction: { parts: [{ text: system }] },
           contents: [{ role: 'user', parts }],
-          generationConfig: { maxOutputTokens: 8000, temperature: 0.2 }
+          generationConfig: { maxOutputTokens: 32000, temperature: 0.2 }
         }
       };
     },
