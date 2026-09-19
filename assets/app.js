@@ -4,9 +4,9 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=11';
-import { readBatch, consolidate, checkKey } from './audit.js?v=11';
-import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=11';
+import { groupByAgency, countPages, pages } from './scan.js?v=12';
+import { readBatch, collate, checkKey } from './audit.js?v=12';
+import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=12';
 
 const $ = s => document.querySelector(s);
 
@@ -516,19 +516,18 @@ async function run() {
       if (abort.signal.aborted) break;
 
       phase(`Writing up ${agency.name}`);
-      log('  collating findings into queries…');
-      try {
-        const summary = await consolidate(C, agency.name, findings, abort.signal);
-        results.push({ agency: agency.name, pages: findings.length, ...summary });
-        log(`  ${summary.observations.length} observation(s), score ${summary.score}`, 'ok');
-      } catch (e) {
-        if (e.name === 'AbortError') throw e;
-        /* Merging is the last step and the cheapest to lose. Keep the raw
-           per-page findings rather than discarding pages already paid for. */
-        results.push(rawFallback(agency.name, findings));
-        log(`  could not merge (${e.message}) — keeping raw findings`, 'warn');
-        if (e.fatal) throw e;
-      }
+
+      /* Local, deterministic, and free — no model call. The sentence comes
+         from the firm's own template, so the wording cannot drift, and one
+         row per defect is preserved rather than summarised away. */
+      const observations = collate(findings);
+      results.push({
+        agency: agency.name,
+        pages: findings.length,
+        header: headerFrom(findings),
+        observations
+      });
+      log(`  ${observations.length} quer${observations.length === 1 ? 'y' : 'ies'}`, 'ok');
     }
 
     if (failedPages) {
@@ -557,21 +556,11 @@ async function run() {
   }
 }
 
-/* Un-merged findings, one observation per issue, so a run that dies at the
-   last step still hands back everything the pages cost. */
-function rawFallback(name, findings) {
-  const observations = [];
-  findings.forEach(f => (f.issues || []).forEach(i => observations.push({
-    text: i.text,
-    severity: i.severity || 'low',
-    category: i.category || '',
-    sources: [f.label]
-  })));
-  return {
-    agency: name, pages: findings.length,
-    score: '—', grade: '—', category: 'not merged',
-    partial: true, observations
-  };
+/* The Agency Visit Sign Off page carries everything rows 1-14 of the sheet
+   need, so whichever page the model recognised as that form supplies them. */
+function headerFrom(findings) {
+  const f = findings.find(x => x.signoff) || {};
+  return f.signoff || {};
 }
 
 /* ---------- results ----------------------------------------------------- */
@@ -579,43 +568,46 @@ function render() {
   if (!results.length) return;
   $('#p-res').classList.remove('hide');
 
-  $('#results').innerHTML = results.map(r => `
+  $('#results').innerHTML = results.map(r => {
+    /* grouped by Main Category, the way the sheet is laid out */
+    const byCat = new Map();
+    r.observations.forEach(o => {
+      const c = o.category || 'Process Management';
+      if (!byCat.has(c)) byCat.set(c, []);
+      byCat.get(c).push(o);
+    });
+
+    return `
     <div style="margin-bottom:34px">
       <h3 style="font-size:17px;margin-bottom:2px">${esc(r.agency)}</h3>
-      <div class="meta">${r.pages} pages read${r.partial
-        ? ' · <b style="color:var(--amber)">raw findings, not merged — duplicates not removed</b>'
-        : ''}</div>
-      <div class="score">
-        <div><div class="k">Score</div><div class="v">${r.score}</div></div>
-        <div><div class="k">Grade</div><div class="v">${esc(r.grade)}</div></div>
-        <div><div class="k">Category</div><div class="v" style="font-size:19px">${esc(r.category)}</div></div>
-        <div><div class="k">Queries</div><div class="v">${r.observations.length}</div></div>
-      </div>
-      ${r.observations.length ? r.observations.map(o => `
-        <div class="obs ${esc(o.severity || 'low')}">
-          <div class="hd">
-            <span class="txt">${esc(o.text)}</span>
-            <span>
-              <span class="tag cat">${esc(o.category || '')}</span>
-              <span class="tag ${esc(o.severity || 'low')}">${esc(o.severity || '')}</span>
-            </span>
-          </div>
-          ${o.sources?.length ? `<div class="src">${esc(o.sources.join('  ·  '))}</div>` : ''}
+      <div class="meta">${r.pages} pages read · ${r.observations.length} quer${
+        r.observations.length === 1 ? 'y' : 'ies'}</div>
+      ${[...byCat.entries()].map(([cat, list]) => `
+        <div style="margin-top:18px">
+          <div class="catline">${esc(cat)} <span>${list.length}</span></div>
+          ${list.map(o => `
+            <div class="obs low">
+              <div class="txt" style="font-weight:500">${esc(o.text)}</div>
+              ${o.sources?.length
+                ? `<div class="src">${esc(o.sources.slice(0, 6).join('  ·  '))}${
+                    o.sources.length > 6 ? ` +${o.sources.length - 6}` : ''}</div>` : ''}
+            </div>`).join('')}
         </div>`).join('')
-      : '<div class="empty">No exceptions found in this folder.</div>'}
-    </div>`).join('');
+      || '<div class="empty">No exceptions found in this folder.</div>'}
+    </div>`;
+  }).join('');
 
   $('#p-res').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 /* ---------- export ------------------------------------------------------ */
 function asText() {
-  return results.map(r =>
-    `${r.agency}\nScore ${r.score} — Grade ${r.grade} (${r.category})\n\nAuditor Observations:\n` +
-    (r.observations.length
-      ? r.observations.map((o, i) => `${i + 1}. ${o.text}`).join('\n')
-      : 'Nil.')
-  ).join('\n\n———\n\n');
+  return results.map(r => {
+    const lines = [r.agency, '', 'Main Category\tObservation'];
+    r.observations.forEach(o => lines.push(`${o.category}\t${o.text}`));
+    if (!r.observations.length) lines.push('Nil');
+    return lines.join('\n');
+  }).join('\n\n———\n\n');
 }
 
 $('#copy').addEventListener('click', async () => {
@@ -628,12 +620,12 @@ $('#copy').addEventListener('click', async () => {
 
 $('#csv').addEventListener('click', () => {
   const q = s => `"${String(s ?? '').replace(/"/g, '""')}"`;
-  const rows = [['Agency', 'Score', 'Grade', 'Category', 'Severity', 'Area', 'Observation', 'Sources']];
+  /* same columns as the Query Sheet, so it pastes straight in */
+  const rows = [['Agency', 'Main Category', 'Observation', 'Status', 'Sources']];
   results.forEach(r => {
-    if (!r.observations.length) rows.push([r.agency, r.score, r.grade, r.category, '', '', 'Nil', '']);
+    if (!r.observations.length) rows.push([r.agency, '', 'Nil', '', '']);
     r.observations.forEach(o => rows.push([
-      r.agency, r.score, r.grade, r.category,
-      o.severity, o.category, o.text, (o.sources || []).join('; ')
+      r.agency, o.category, o.text, '', (o.sources || []).join('; ')
     ]));
   });
   const blob = new Blob(['﻿' + rows.map(r => r.map(q).join(',')).join('\r\n')],
