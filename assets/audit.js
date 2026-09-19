@@ -112,7 +112,14 @@ async function call(key, body, signal) {
   if (!res.ok) {
     let detail = '';
     try { detail = (await res.json())?.error?.message || ''; } catch { /* non-JSON body */ }
-    throw new Error(`HTTP ${res.status}${detail ? ' — ' + detail : ''}`);
+    const err = new Error(`HTTP ${res.status}${detail ? ' — ' + detail : ''}`);
+
+    /* No amount of retrying fixes an empty wallet, a bad key or a blocked
+       account — these end the run instead of failing page after page. */
+    err.fatal = res.status === 401 || res.status === 403 ||
+                (res.status === 400 && /credit balance|billing|quota/i.test(detail));
+    err.status = res.status;
+    throw err;
   }
 
   const json = await res.json();

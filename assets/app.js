@@ -4,8 +4,8 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages, estimateCost } from './scan.js?v=2';
-import { readBatch, consolidate } from './audit.js?v=2';
+import { groupByAgency, countPages, pages, estimateCost } from './scan.js?v=3';
+import { readBatch, consolidate } from './audit.js?v=3';
 
 const $ = s => document.querySelector(s);
 
@@ -183,7 +183,7 @@ async function run() {
           const n = got.reduce((s, g) => s + g.issues.length, 0);
           log(`  read ${chunk.length} pages — ${n} issue${n === 1 ? '' : 's'}`, n ? 'warn' : 'ok');
         } catch (e) {
-          if (e.name === 'AbortError') throw e;
+          if (e.name === 'AbortError' || e.fatal) throw e;
           log(`  batch failed: ${e.message}`, 'err');
         }
         done += chunk.length;
@@ -202,19 +202,53 @@ async function run() {
       if (abort.signal.aborted) break;
 
       log('  consolidating…');
-      const summary = await consolidate(key, model, effort, agency.name, findings, abort.signal);
-      results.push({ agency: agency.name, pages: findings.length, ...summary });
-      log(`  ${summary.observations.length} observation(s), score ${summary.score}`, 'ok');
+      try {
+        const summary = await consolidate(key, model, effort, agency.name, findings, abort.signal);
+        results.push({ agency: agency.name, pages: findings.length, ...summary });
+        log(`  ${summary.observations.length} observation(s), score ${summary.score}`, 'ok');
+      } catch (e) {
+        if (e.name === 'AbortError') throw e;
+        /* Merging is the last step and the cheapest to lose. Keep the raw
+           per-page findings rather than discarding pages already paid for. */
+        results.push(rawFallback(agency.name, findings));
+        log(`  could not merge (${e.message}) — keeping raw findings`, 'warn');
+        if (e.fatal) throw e;
+      }
     }
 
     render();
   } catch (e) {
-    if (e.name === 'AbortError') { render(); }
-    else { log('failed: ' + e.message, 'err'); }
+    if (e.name === 'AbortError') log('stopped — showing what was read', 'warn');
+    else if (e.fatal) log('STOPPED: ' + e.message, 'err');
+    else log('failed: ' + e.message, 'err');
+
+    if (e.fatal) {
+      log(results.length
+        ? `kept ${results.length} finished folder(s) below — export before closing`
+        : 'nothing finished, so nothing was lost', 'warn');
+    }
+    render();          // whatever completed is still worth having
   } finally {
     $('#run').disabled = false;
     abort = null;
   }
+}
+
+/* Un-merged findings, one observation per issue, so a run that dies at the
+   last step still hands back everything the pages cost. */
+function rawFallback(name, findings) {
+  const observations = [];
+  findings.forEach(f => (f.issues || []).forEach(i => observations.push({
+    text: i.text,
+    severity: i.severity || 'low',
+    category: i.category || '',
+    sources: [f.label]
+  })));
+  return {
+    agency: name, pages: findings.length,
+    score: '—', grade: '—', category: 'not merged',
+    partial: true, observations
+  };
 }
 
 /* ---------- results ----------------------------------------------------- */
@@ -225,7 +259,9 @@ function render() {
   $('#results').innerHTML = results.map(r => `
     <div style="margin-bottom:34px">
       <h3 style="font-size:17px;margin-bottom:2px">${esc(r.agency)}</h3>
-      <div class="meta">${r.pages} pages read</div>
+      <div class="meta">${r.pages} pages read${r.partial
+        ? ' · <b style="color:var(--amber)">raw findings, not merged — duplicates not removed</b>'
+        : ''}</div>
       <div class="score">
         <div><div class="k">Score</div><div class="v">${r.score}</div></div>
         <div><div class="k">Grade</div><div class="v">${esc(r.grade)}</div></div>
