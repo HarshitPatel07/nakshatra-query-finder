@@ -5,19 +5,18 @@
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
 import { groupByAgency, countPages, pages } from './scan.js?v=5';
-import { readBatch, consolidate, checkKey } from './audit.js?v=5';
-import { PROVIDERS, DEFAULT_PROVIDER, estimateCost } from './providers.js?v=5';
+import { readBatch, consolidate } from './audit.js?v=5';
+import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=5';
 
 const $ = s => document.querySelector(s);
 
 const BATCH = 6;          // pages per API call
-const PROV_STORE = 'nq.provider';
+const KEY_STORE = 'nq.key';
 const EFFORT_STORE = 'nq.effort';
-/* Keys and model choice are per provider, so switching back doesn't lose them. */
-const keyStoreFor = p => `nq.key.${p}`;
-const modelStoreFor = p => `nq.model.${p}`;
+const OVERRIDE_STORE = 'nq.override';
 
-const providerId = () => $('#provider').value || DEFAULT_PROVIDER;
+/* What the pasted key turned out to be. Null until a key is recognised. */
+let detected = null;
 
 let agencies = [];
 let results = [];
@@ -47,94 +46,135 @@ function showSaved() {
   keyStatus(`Saved on this browser (…${k.slice(-4)})`, 'var(--green)');
 }
 
-/* ---------- provider + model dropdowns ---------------------------------- */
-$('#provider').innerHTML = Object.entries(PROVIDERS)
-  .map(([id, p]) => `<option value="${id}">${esc(p.label)}${p.freeTier ? ' · free tier' : ''}</option>`)
-  .join('');
+/* ---------- detection strip --------------------------------------------- */
+function strip(html, cls = '') {
+  const el = $('#detected');
+  el.className = 'detected ' + cls;
+  el.innerHTML = html;
+  el.classList.toggle('hide', !html);
+}
 
-function applyProvider() {
-  const id = providerId();
+/* --------------------------------------------------------------------------
+   Recognise the key, then ask that account which models it can reach and take
+   the most capable one. Debounced, and cancels an in-flight lookup so a paste
+   mid-typing doesn't land on a stale answer.
+   -------------------------------------------------------------------------- */
+let lookup = null;
+
+async function identify(key) {
+  lookup?.abort();
+  detected = null;
+
+  if (!key) { strip(''); redrawCosts(); return; }
+
+  const id = detectProvider(key);
+  if (!id) {
+    strip('Key not recognised. Expected <b>sk-ant-…</b> (Claude), ' +
+          '<b>sk-…</b> (OpenAI) or <b>AIza…</b> (Gemini).', 'bad');
+    redrawCosts();
+    return;
+  }
+
   const P = PROVIDERS[id];
+  strip(`Recognised <b>${esc(P.label)}</b> — finding the best model…`, 'busy');
+
+  lookup = new AbortController();
+  let pick;
+  try {
+    pick = await resolveModel(id, key, lookup.signal);
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    pick = null;
+  }
+  if (!pick) { strip(`Recognised <b>${esc(P.label)}</b>, but the model list failed.`, 'bad'); return; }
+
+  detected = { provider: id, ...pick };
+
+  /* an explicit override outlives the auto-pick */
+  const ov = store.get(OVERRIDE_STORE);
+  if (ov && P.models.some(m => m.id === ov)) {
+    detected.model = ov;
+    detected.label = P.models.find(m => m.id === ov).label;
+    detected.overridden = true;
+  }
 
   $('#model').innerHTML = P.models
     .map(m => `<option value="${m.id}">${esc(m.label)}</option>`).join('');
-  const savedModel = store.get(modelStoreFor(id));
-  if (savedModel && P.models.some(m => m.id === savedModel)) $('#model').value = savedModel;
+  $('#model').value = detected.model;
 
-  $('#keylbl').textContent = P.label + ' API key';
-  $('#key').placeholder = P.keyHint;
-  $('#keyurl').textContent = P.keyUrl;
+  strip(
+    `Using <b>${esc(P.label)}</b> <span class="pill">${esc(detected.label)}</span>` +
+    (detected.overridden ? ' <i>(your choice)</i>'
+      : detected.detected ? ' — best model this key can reach'
+      : ' — assumed best; this key cannot list models') +
+    (pick.note && !detected.overridden ? ` <i>${esc(pick.note)}</i>` : ''),
+    detected.detected || detected.overridden ? '' : 'busy'
+  );
+
   $('#provnote').innerHTML = esc(P.note);
   $('#provnote').style.color = P.freeTier ? 'var(--amber)' : 'var(--muted)';
-
-  $('#key').value = store.get(keyStoreFor(id)) || '';
-  showSaved();
-  if (agencies.length) drawAgencies();
+  redrawCosts();
 }
+
+function redrawCosts() { if (agencies.length) drawAgencies(); }
 
 /* restore */
 (function restore() {
-  const p = store.get(PROV_STORE);
-  $('#provider').value = (p && PROVIDERS[p]) ? p : DEFAULT_PROVIDER;
   const e = store.get(EFFORT_STORE);
   if (e) $('#effort').value = e;
-  applyProvider();
+  const k = store.get(KEY_STORE);
+  if (k) { $('#key').value = k; showSaved(); identify(k); }
 })();
 
-$('#provider').addEventListener('change', e => {
-  store.set(PROV_STORE, e.target.value);
-  applyProvider();
-});
-
-/* save as they type or paste */
+/* save + identify as they type or paste */
 let saveTimer = null;
 $('#key').addEventListener('input', e => {
   const v = e.target.value.trim();
-  const slot = keyStoreFor(providerId());
   clearTimeout(saveTimer);
-  if (!v) { store.del(slot); keyStatus('', ''); return; }
+  if (!v) { store.del(KEY_STORE); keyStatus('', ''); identify(''); return; }
   saveTimer = setTimeout(() => {
-    store.set(slot, v)
+    store.set(KEY_STORE, v)
       ? showSaved()
       : keyStatus('Could not save — private window?', 'var(--amber)');
-  }, 250);
+    identify(v);
+  }, 400);
 });
 
 $('#forget').addEventListener('click', () => {
-  store.del(keyStoreFor(providerId()));
+  store.del(KEY_STORE);
+  store.del(OVERRIDE_STORE);
   $('#key').value = '';
   keyStatus('Key removed from this browser', 'var(--muted)');
+  identify('');
   $('#key').focus();
 });
 
-$('#model').addEventListener('change', e => {
-  store.set(modelStoreFor(providerId()), e.target.value);
-  if (agencies.length) drawAgencies();
-});
 $('#effort').addEventListener('change', e => store.set(EFFORT_STORE, e.target.value));
 
-/* ---------- test key ---------------------------------------------------- */
-$('#testkey').addEventListener('click', async () => {
-  const btn = $('#testkey');
-  const key = $('#key').value.trim();
-  if (!key) { keyStatus('Enter a key first', 'var(--amber)'); return; }
-  btn.disabled = true; btn.textContent = 'Testing…';
-  try {
-    await checkKey(cfg());
-    keyStatus('Key works', 'var(--green)');
-  } catch (e) {
-    keyStatus('Key failed — ' + e.message, 'var(--red)');
-  } finally {
-    btn.disabled = false; btn.textContent = 'Test key';
+/* ---------- optional manual override ------------------------------------ */
+$('#advtoggle').addEventListener('click', ev => {
+  ev.preventDefault();
+  const w = $('#advwrap');
+  w.classList.toggle('hide');
+  $('#advtoggle').textContent = w.classList.contains('hide')
+    ? 'Override the model' : 'Use the automatic choice';
+  if (w.classList.contains('hide')) {
+    store.del(OVERRIDE_STORE);
+    identify($('#key').value.trim());
   }
+});
+
+$('#model').addEventListener('change', e => {
+  store.set(OVERRIDE_STORE, e.target.value);
+  identify($('#key').value.trim());
 });
 
 /* everything the audit layer needs, in one object */
 function cfg() {
   return {
-    provider: providerId(),
+    provider: detected?.provider,
     key: $('#key').value.trim(),
-    model: $('#model').value,
+    model: detected?.model,
     effort: $('#effort').value
   };
 }
@@ -172,14 +212,14 @@ $('#picker').addEventListener('change', async e => {
 });
 
 function drawAgencies() {
-  const prov = providerId(), model = $('#model').value;
+  const prov = detected?.provider, model = detected?.model;
   $('#agency-rows').innerHTML = agencies.map((a, i) => `
     <tr>
       <td><input type="checkbox" class="pick" data-i="${i}" checked></td>
       <td><span class="agency-name">${esc(a.name)}</span></td>
       <td class="meta">${a.files.length} file${a.files.length > 1 ? 's' : ''}</td>
       <td class="num">${a.pages}</td>
-      <td class="num">${money(estimateCost(a.pages, prov, model))}</td>
+      <td class="num">${prov && model ? money(estimateCost(a.pages, prov, model)) : '—'}</td>
     </tr>`).join('');
 
   $('#agency-rows').querySelectorAll('.pick')
@@ -193,16 +233,25 @@ function picked() {
     .map(c => agencies[+c.dataset.i]);
 }
 
-/* A free-tier model prices at zero — say "free", not "$0.00". */
-function money(v) { return v === 0 ? 'free' : '$' + v.toFixed(2); }
+/* A free-tier model prices at zero — say "free", not "$0.00".
+   With no key yet there is no rate to quote, so say nothing rather than $0. */
+function money(v) {
+  if (v === null) return 'cost shown once a key is added';
+  return v === 0 ? 'free' : '$' + v.toFixed(2);
+}
+
+function cost(pages) {
+  if (!detected) return null;
+  return estimateCost(pages, detected.provider, detected.model);
+}
 
 function totals() {
   const sel = picked();
-  const prov = providerId(), model = $('#model').value;
   const p = sel.reduce((n, a) => n + a.pages, 0);
-  const c = sel.reduce((n, a) => n + estimateCost(a.pages, prov, model), 0);
+  const c = detected ? sel.reduce((n, a) => n + cost(a.pages), 0) : null;
   $('#tot-line').textContent =
-    `${sel.length} agency folder${sel.length === 1 ? '' : 's'} · ${p} pages · about ${money(c)}`;
+    `${sel.length} agency folder${sel.length === 1 ? '' : 's'} · ${p} pages · ` +
+    (c === null ? money(null) : 'about ' + money(c));
   $('#run').disabled = !sel.length;
 }
 
@@ -215,8 +264,9 @@ $('#stop').addEventListener('click', () => {
 
 async function run() {
   const C = cfg();
-  if (!C.key) {
-    alert(`Enter your ${PROVIDERS[C.provider].label} API key first.`);
+  if (!C.key) { alert('Paste an AI API key first.'); $('#key').focus(); return; }
+  if (!C.provider || !C.model) {
+    alert('That key was not recognised yet — check the message under the key box.');
     $('#key').focus();
     return;
   }
@@ -235,7 +285,7 @@ async function run() {
   try {
     for (const agency of sel) {
       if (abort.signal.aborted) break;
-      log(`— ${agency.name} (${agency.pages} pages) —`);
+      log(`— ${agency.name} (${agency.pages} pages) via ${PROVIDERS[C.provider].label} ${detected.label} —`);
 
       const findings = [];
       let buf = [];

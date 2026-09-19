@@ -28,21 +28,9 @@
     </div>
 
     <div class="row" style="align-items:flex-end">
-      <label class="fld" style="width:210px;margin-bottom:0">
-        <span class="lbl">AI provider</span>
-        <select id="provider"></select>
-      </label>
-      <label class="fld" style="flex:1;min-width:240px;margin-bottom:0">
-        <span class="lbl" id="keylbl">API key</span>
-        <input type="password" id="key" placeholder="sk-ant-..." autocomplete="off">
-      </label>
-      <button class="btn ghost sm" id="forget" style="margin-bottom:1px" title="Remove the saved key for this provider">Forget</button>
-    </div>
-
-    <div class="row" style="align-items:flex-end;margin-top:12px">
-      <label class="fld" style="width:260px;margin-bottom:0">
-        <span class="lbl">Model</span>
-        <select id="model"></select>
+      <label class="fld" style="flex:1;min-width:260px;margin-bottom:0">
+        <span class="lbl">Paste any AI API key &mdash; Claude, OpenAI or Gemini</span>
+        <input type="password" id="key" placeholder="sk-ant-… / sk-… / AIza…" autocomplete="off">
       </label>
       <label class="fld" style="width:150px;margin-bottom:0">
         <span class="lbl">Care level</span>
@@ -52,15 +40,25 @@
           <option value="medium">Medium</option>
         </select>
       </label>
-      <button class="btn ghost sm" id="testkey" style="margin-bottom:1px">Test key</button>
+      <button class="btn ghost sm" id="forget" style="margin-bottom:1px" title="Remove the saved key">Forget</button>
     </div>
 
-    <p class="note" style="margin-top:12px">
+    <div id="detected" class="detected hide"></div>
+
+    <p class="note" style="margin-top:10px">
       <span id="keystat"></span>
-      Key from <code id="keyurl">console.anthropic.com</code>. Saved per provider in this browser,
-      kept until you clear site data or press Forget.
+      The provider is recognised from the key, and the most capable model it can
+      reach is chosen automatically. Keys: <code>console.anthropic.com</code>,
+      <code>platform.openai.com</code> or <code>aistudio.google.com</code>.
     </p>
     <p class="note" id="provnote" style="margin-top:8px"></p>
+
+    <p class="note" style="margin-top:8px">
+      <a href="#" id="advtoggle">Override the model</a>
+      <span id="advwrap" class="hide">
+        &nbsp;<select id="model" style="width:auto;display:inline-block;padding:4px 8px"></select>
+      </span>
+    </p>
   </section>
 
   <!-- ============ 2. FOLDER ============ -->
