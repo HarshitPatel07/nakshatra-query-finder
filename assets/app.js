@@ -4,9 +4,9 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=4';
-import { readBatch, consolidate, checkKey } from './audit.js?v=4';
-import { PROVIDERS, DEFAULT_PROVIDER, estimateCost } from './providers.js?v=4';
+import { groupByAgency, countPages, pages } from './scan.js?v=5';
+import { readBatch, consolidate, checkKey } from './audit.js?v=5';
+import { PROVIDERS, DEFAULT_PROVIDER, estimateCost } from './providers.js?v=5';
 
 const $ = s => document.querySelector(s);
 
@@ -75,7 +75,7 @@ function applyProvider() {
 /* restore */
 (function restore() {
   const p = store.get(PROV_STORE);
-  if (p && PROVIDERS[p]) $('#provider').value = p;
+  $('#provider').value = (p && PROVIDERS[p]) ? p : DEFAULT_PROVIDER;
   const e = store.get(EFFORT_STORE);
   if (e) $('#effort').value = e;
   applyProvider();

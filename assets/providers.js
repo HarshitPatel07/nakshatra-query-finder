@@ -142,7 +142,9 @@ export const PROVIDERS = {
   }
 };
 
-export const DEFAULT_PROVIDER = 'anthropic';
+/* Gemini by default: it is the only one with a free tier, and nothing is
+   charged before the user deliberately switches. */
+export const DEFAULT_PROVIDER = 'gemini';
 
 /* Roughly (w x h)/750 tokens per page; good enough to price a folder. */
 export function estimateCost(pageCount, providerId, modelId) {
