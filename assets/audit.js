@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=32';
+import { PROVIDERS } from './providers.js?v=33';
 import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
-         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=32';
+         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=33';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
@@ -555,9 +555,18 @@ function sameName(a, b) {
   if (a === b) return true;
   const [af, al] = a.split(' ');
   const [bf, bl] = b.split(' ');
-  if (!al || !bl) return distance(a, b) <= 1;
-  /* surnames vary most, so allow a little more room there */
-  return distance(af, bf) <= 1 && distance(al, bl) <= 2;
+
+  /* One name is a bare forename — "Prashant" against "Prashant Singh". Those
+     are the same person far more often than they are two people. */
+  if (!al || !bl) return af === bf || distance(af, bf) <= 1;
+
+  /* Misreadings run further than a single letter: Anajwala came back as
+     Arejwalu, Mogne as mogne with Vivek as Vival. Either half matching
+     closely, with the other merely similar, is enough. */
+  const df = distance(af, bf), dl = distance(al, bl);
+  if (df === 0 && dl <= 4) return true;
+  if (dl === 0 && df <= 3) return true;
+  return df <= 2 && dl <= 3;
 }
 
 function resolveKey(known, key) {
@@ -593,8 +602,24 @@ export function visitGaps(findings) {
 
   if (!roster.size || !months.size) return [];
 
-  /* the audit period is the span the register actually covers */
-  const period = [...months].sort((a, b) => monthOrder(a) - monthOrder(b));
+  /* --------------------------------------------------------------------
+     The period is the busiest three months, not every month that appears.
+     A visit register runs beyond the quarter under audit, and counting the
+     stragglers at either end invented a gap for every manager who simply
+     had no reason to visit in a month outside the period.
+     -------------------------------------------------------------------- */
+  const weight = new Map();
+  for (const set of seen.values()) for (const m of set)
+    weight.set(m, (weight.get(m) || 0) + 1);
+
+  const ordered = [...weight.keys()].sort((a, b) => monthOrder(a) - monthOrder(b));
+  let best = -1, from = 0;
+  ordered.forEach((m, i) => {
+    const w = ordered.slice(i, i + 3).reduce((t, x) => t + weight.get(x), 0);
+    if (w > best) { best = w; from = i; }
+  });
+  const period = ordered.slice(from, from + 3);
+  if (!period.length) return [];
 
   const never = [];
   const missing = new Map();     // joined months -> [names]
@@ -607,6 +632,30 @@ export function visitGaps(findings) {
     const key = joinMonths(gaps);
     if (!missing.has(key)) missing.set(key, []);
     missing.get(key).push(name);
+  }
+
+  /* --------------------------------------------------------------------
+     A sanity gate, learned the hard way.
+
+     Run on Focus this produced eleven visit queries where the auditor wrote
+     none, because misread spellings split one manager into several and each
+     half inherited the other's gaps. Eleven invented rows cost more review
+     time than the two real ones save.
+
+     So when most of the roster appears to have gaps, the reading is not to
+     be trusted — the register was misread, not neglected — and it is
+     reported as one thing to check rather than as a page of queries.
+     -------------------------------------------------------------------- */
+  const flagged = never.length + [...missing.values()].reduce((n, v) => n + v.length, 0);
+  if (flagged > Math.max(2, Math.ceil(roster.size * 0.4))) {
+    return [{
+      category: 'Visitor Register Verifications',
+      text: `Visit register could not be read reliably — ${flagged} of ${roster.size} ` +
+            `Collection Managers appear to have missing visits. Check the register by hand.`,
+      document: 'Visiting register page', field: '', who: '', month: '',
+      review: 'not raised as queries — too many to be credible',
+      sources: ['whole folder']
+    }];
   }
 
   const out = [];
