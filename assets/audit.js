@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=24';
+import { PROVIDERS } from './providers.js?v=25';
 import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
-         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=24';
+         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=25';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
@@ -68,7 +68,7 @@ Reply with ONLY a JSON object, no prose and no code fence:
 {"pages":[{"page":<1-based number within THIS batch>,
   "doc":"<which document this page is>",
   "month":"<e.g. Jun'26, or empty if not legible>",
-  "issues":[{"document":"<document name as listed above>",
+  "issues":[{"document":"<the DOCUMENT — the name of the printed page itself, e.g. 'Manpower register' or 'No Dues and Data Purging Declaration'. NEVER a category name: 'Code Of Conduct' and 'Data Security' are categories, not documents>",
              "field":"<the exact field that is blank or wrong>",
              "who":"<the CM or Executive named on that row, or empty>",
              "whoLabel":"<CM Name | Executive Name | LAN No. | empty>",
@@ -264,8 +264,44 @@ async function call(cfg, system, content, signal) {
      <Document> was not filled up properly in the Nakshatra Manual
        [for the month of <MONTHS>]. (i.e. <Field>)(<WhoLabel> -:<Who>)
    -------------------------------------------------------------------------- */
+/* --------------------------------------------------------------------------
+   The model regularly answers with the CATEGORY where the DOCUMENT belongs —
+   "Code Of Conduct was not filled up properly" instead of "Declaration cum
+   undertaking page was...". The two fields sit next to each other in the reply
+   and read alike, so the confusion is predictable. Rather than trust the
+   prompt, map any category name back to the document it refers to.
+
+   Categories covering several documents (Process Management) are left alone:
+   guessing between Audit Score Card and Agency Training Tracker would be
+   worse than leaving what the model actually said.
+   -------------------------------------------------------------------------- */
+const DOC_FOR_CATEGORY = (() => {
+  const counts = new Map();
+  for (const d of DOCUMENTS) counts.set(d.cat, (counts.get(d.cat) || 0) + 1);
+  const map = new Map();
+  for (const d of DOCUMENTS) if (counts.get(d.cat) === 1) map.set(d.cat.toLowerCase(), d.name);
+  return map;
+})();
+
+const KNOWN_DOCS = new Set(DOCUMENTS.map(d => d.name.toLowerCase()));
+
+export function fixDocument(doc, category) {
+  const d = String(doc || '').trim();
+  if (!d) return '';
+  if (KNOWN_DOCS.has(d.toLowerCase())) return d;
+
+  /* it named a category — swap in that category's document */
+  const byName = DOC_FOR_CATEGORY.get(d.toLowerCase());
+  if (byName) return byName;
+
+  /* it named something else entirely; the category may still place it */
+  const byCat = DOC_FOR_CATEGORY.get(String(category || '').trim().toLowerCase());
+  return byCat && /verification|declaration|register|compliance|security/i.test(d)
+    ? byCat : d;
+}
+
 export function phrase(issue) {
-  const doc = (issue.document || '').trim();
+  const doc = fixDocument(issue.document, issue.category);
   if (!doc) return null;
 
   /* the stem is per-document and learned from the firm's own sheets */
@@ -363,12 +399,15 @@ export async function readBatch(cfg, batch, signal) {
     label: batch[(p.page || 1) - 1]?.label || batch[0]?.label || '?',
     doc: p.doc || '',
     month: p.month || '',
-    issues: (Array.isArray(p.issues) ? p.issues : []).map(i => ({
-      ...i,
-      category: canonCat(i.category),
-      month: i.month || p.month || '',
-      text: i.note || phrase(i) || i.text || ''
-    })).filter(i => i.text)
+    issues: (Array.isArray(p.issues) ? p.issues : []).map(i => {
+      /* corrected here, not just at phrasing time, so collation groups on the
+         real document rather than on whatever the model called it */
+      const fixed = { ...i, category: canonCat(i.category) };
+      fixed.document = fixDocument(i.document, fixed.category);
+      fixed.month = i.month || p.month || '';
+      fixed.text = i.note || phrase(fixed) || i.text || '';
+      return fixed;
+    }).filter(i => i.text)
   }));
 }
 
