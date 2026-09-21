@@ -158,6 +158,9 @@ export const PROVIDERS = {
       const version = parseFloat(m[1]);
       const tier = m[2] === 'pro' ? 300 : (m[3] ? 100 : 200);
       const stable = /preview|exp|-\d{2}-\d{4}$/.test(id) ? 0 : 10;
+      /* Lite variants read a little less well but are far less contended, so
+         they stay in the fallback chain rather than being ranked out of it —
+         when the headline models are all shedding load, these still answer. */
       return version * 1000 + tier + stable;
     },
     listUrl: key => `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,

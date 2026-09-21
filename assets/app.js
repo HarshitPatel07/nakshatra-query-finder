@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=14';
-import { readBatch, collate, checkKey } from './audit.js?v=14';
-import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=14';
-import { loadLearned, forgetLearned } from './corpus.js?v=14';
+import { groupByAgency, countPages, pages } from './scan.js?v=15';
+import { readBatch, collate, checkKey } from './audit.js?v=15';
+import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=15';
+import { loadLearned, forgetLearned } from './corpus.js?v=15';
 
 const $ = s => document.querySelector(s);
 
@@ -184,7 +184,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=14');
+    const { importWorkbook } = await import('./import.js?v=15');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -231,7 +231,11 @@ async function stepDownModel() {
             `<span class="pill">${esc(detected.label)}</span> — switched mid-run`);
       return true;
     } catch (e) {
-      deadModels.add(next);       // don't come back to it later in this run
+      /* Only retire a model that genuinely cannot serve this key. A 503 means
+         Google handed its spare capacity to paying traffic for a moment — the
+         model is fine and will answer again shortly, so retiring it here would
+         burn the whole list in under two minutes. */
+      if (e.quotaCapped || e.status === 404 || e.status === 400) deadModels.add(next);
     }
   }
   return false;
@@ -478,6 +482,8 @@ async function run() {
   const totalPages = sel.reduce((n, a) => n + a.pages, 0);
   let done = 0;
   let failedPages = 0;      // pages that never got read, after every retry
+  let busyWaits = 0;        // times the whole model list was busy at once
+  const MAX_BUSY_WAITS = 5; // 30s, 60s, 120s, 240s, 240s — then give up honestly
   startProgress(totalPages);
 
   try {
@@ -545,6 +551,23 @@ async function run() {
             buf = chunk.concat(buf);
             return;
           }
+
+          /* Every model busy at once means Google is shedding free-tier load,
+             not that the folder is unreadable. Sit it out and come back to the
+             same pages rather than throwing them away. */
+          if (e.exhausted && busyWaits < MAX_BUSY_WAITS) {
+            busyWaits++;
+            const wait = Math.min(30 * 2 ** (busyWaits - 1), 240);
+            log(`  every model is busy — waiting ${wait}s before trying again ` +
+                `(${busyWaits} of ${MAX_BUSY_WAITS})`, 'warn');
+            phase(`All models busy — waiting ${wait}s`);
+            deadModels.clear();            // give them all another chance
+            await new Promise(r => setTimeout(r, wait * 1000));
+            if (abort.signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+            buf = chunk.concat(buf);
+            return;
+          }
+
           failedPages += chunk.length;
           prog.failed = failedPages;
         }
