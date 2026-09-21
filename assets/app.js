@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=27';
-import { readBatch, collate, checkKey } from './audit.js?v=27';
-import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=27';
-import { loadLearned, forgetLearned } from './corpus.js?v=27';
+import { groupByAgency, countPages, pages, setTiling } from './scan.js?v=28';
+import { readBatch, collate, checkKey } from './audit.js?v=28';
+import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=28';
+import { loadLearned, forgetLearned } from './corpus.js?v=28';
 
 const $ = s => document.querySelector(s);
 
@@ -248,7 +248,7 @@ $('#mprep').addEventListener('click', async () => {
   $('#mstat').textContent = 'rendering pages…';
 
   try {
-    const { bundle, promptFor, download } = await import('./manual.js?v=27');
+    const { bundle, promptFor, download } = await import('./manual.js?v=28');
     const { parts, index, pageCount } = await bundle(agency, {
       per,
       onProgress: n => { $('#mstat').textContent = `rendering page ${n}…`; }
@@ -287,7 +287,7 @@ $('#mread').addEventListener('click', async () => {
   if (!text) { $('#mreadstat').textContent = 'paste the reply first'; return; }
 
   try {
-    const { parseReply } = await import('./manual.js?v=27');
+    const { parseReply } = await import('./manual.js?v=28');
     const findings = parseReply(text, manual.index);
     const observations = collate(findings);
 
@@ -329,7 +329,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=27');
+    const { importWorkbook } = await import('./import.js?v=28');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -533,8 +533,10 @@ function hhmm(sec) {
 
 function paint() {
   const { pages, total, issues, failed, t0 } = prog;
-  $('#pbar').style.width = total ? Math.round(pages / total * 100) + '%' : '0%';
-  $('#s-pages').textContent = `${pages} / ${total}`;
+  /* A dense page is split into bands, so more images arrive than the page
+     count predicted. Clamp rather than letting the bar run past the end. */
+  $('#pbar').style.width = total ? Math.min(100, Math.round(pages / total * 100)) + '%' : '0%';
+  $('#s-pages').textContent = `${Math.min(pages, total)} / ${total}`;
   $('#s-agency').textContent = prog.agency || '—';
   $('#s-issues').textContent = issues;
   $('#s-failed').textContent = failed;
@@ -638,6 +640,11 @@ async function run() {
      only what identification made of it, and identification can still be
      running, or can have failed because the provider was busy — neither means
      the user forgot to paste something. */
+  /* Maximum reads each page as a grid of full-detail tiles rather than one
+     shrunken image — several times the detail per row, at several times the
+     images. The other levels send one image per page as before. */
+  setTiling($('#effort').value === 'max');
+
   const typed = splitKeys($('#key').value);
   if (!typed.length) { alert('Paste an AI API key first.'); $('#key').focus(); return; }
 
@@ -972,7 +979,7 @@ $('#xlsx').addEventListener('click', async () => {
   const was = btn.textContent;
   btn.textContent = 'Writing…';
   try {
-    const { writeWorkbook } = await import('./export.js?v=27');
+    const { writeWorkbook } = await import('./export.js?v=28');
     const name = results.length === 1
       ? `${results[0].agency.replace(/[^\w .-]+/g, '_')} - Query sheet.xlsx`
       : 'Query sheet.xlsx';
