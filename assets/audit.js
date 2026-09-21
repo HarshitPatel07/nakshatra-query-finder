@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=33';
+import { PROVIDERS } from './providers.js?v=35';
 import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
-         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=33';
+         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=35';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
@@ -446,8 +446,29 @@ function monthOrder(m) {
    reads, and the firm writes "(All …)" in that case instead. */
 const NAME_CAP = 8;
 
+/* The same man is written differently from page to page, so an exact-string
+   dedupe is not enough: "Rabindra Nath Haldar" and "RABINDRA NATH HALDER" both
+   reached the sheet, and because the joined names are part of the grouping key
+   they also split one observation into two rows. Variants are folded onto the
+   first spelling seen, keeping the fullest written form of it. */
+function foldNames(list) {
+  const out = [];                 // [{ key, best }]
+  for (const raw of list.filter(Boolean)) {
+    const name = String(raw).trim();
+    if (!name) continue;
+    const key = nameKey(name);
+    if (!key) continue;
+    const hit = out.find(o => sameName(o.key, key));
+    if (!hit) { out.push({ key, best: name }); continue; }
+    /* the longer spelling is usually the complete one — "Akash Patel" over
+       "Akash" — and a mixed-case one reads better than a shouted one */
+    if (name.length > hit.best.length) hit.best = name;
+  }
+  return out.map(o => o.best);
+}
+
 function joinNames(list) {
-  const u = [...new Set(list.filter(Boolean))];
+  const u = foldNames(list);
   if (u.length <= 1) return u[0] || '';
   if (u.length > NAME_CAP) return `__ALL__${u.length}`;
   return u.slice(0, -1).join(', ') + ' & ' + u[u.length - 1];
@@ -520,16 +541,29 @@ function joinFields(list) {
 const loose = s => String(s || '').toLowerCase()
   .replace(/[^a-z ]/g, ' ').replace(/\s+/g, ' ').trim();
 
+/* --------------------------------------------------------------------------
+   Names here are not written in a settled order. The declared roster gives
+   "Jariwala Dhaval Rajnikant" and "Patel Akash Mukeshbhai" — surname first,
+   with a father's name — while the visit register has the same men down as
+   "Dhaval Jariwala" and "Akash Patel". Comparing by position put each of them
+   on the roster twice and raised a visit gap against both halves.
+
+   So a name is held as its set of words, and two names are the same person
+   when they share enough of those words, whatever order they came in.
+   -------------------------------------------------------------------------- */
+function nameWords(s) {
+  return loose(s).split(' ').filter(w => w.length > 1);
+}
+
 function nameKey(s) {
-  /* first and last word only — middle names come and go between pages */
-  const w = loose(s).split(' ').filter(Boolean);
-  return w.length > 1 ? w[0] + ' ' + w[w.length - 1] : w[0] || '';
+  /* sorted, so the same words in any order give the same key */
+  return nameWords(s).slice().sort().join(' ');
 }
 
 /* How far apart two strings are, capped so it stays cheap. */
 function distance(a, b) {
   if (a === b) return 0;
-  if (Math.abs(a.length - b.length) > 2) return 99;
+  if (Math.abs(a.length - b.length) > 3) return 99;
   const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
   for (let i = 1; i <= a.length; i++) {
     let last = prev[0];
@@ -553,20 +587,38 @@ function distance(a, b) {
    -------------------------------------------------------------------------- */
 function sameName(a, b) {
   if (a === b) return true;
-  const [af, al] = a.split(' ');
-  const [bf, bl] = b.split(' ');
+  const A = a.split(' ').filter(Boolean);
+  const B = b.split(' ').filter(Boolean);
+  if (!A.length || !B.length) return false;
 
-  /* One name is a bare forename — "Prashant" against "Prashant Singh". Those
-     are the same person far more often than they are two people. */
-  if (!al || !bl) return af === bf || distance(af, bf) <= 1;
+  /* how many words the two share, allowing for a hand-written spelling or two
+     — Anajwala / Arejwalu, Akash / Akush, Haldar / Halder */
+  const used = new Set();
+  let shared = 0;
+  for (const x of A) {
+    for (let i = 0; i < B.length; i++) {
+      if (used.has(i)) continue;
+      const y = B[i];
+      /* Longer words carry more evidence, so they can absorb more damage:
+         "Anajwala" and "Arejwalu" are three letters apart and the same man.
 
-  /* Misreadings run further than a single letter: Anajwala came back as
-     Arejwalu, Mogne as mogne with Vivek as Vival. Either half matching
-     closely, with the other merely similar, is enough. */
-  const df = distance(af, bf), dl = distance(al, bl);
-  if (df === 0 && dl <= 4) return true;
-  if (dl === 0 && df <= 3) return true;
-  return df <= 2 && dl <= 3;
+         The tolerance is deliberately generous, because the two errors are not
+         equal. Merging two people who are in fact different loses a query —
+         the sheet under-reports, and the auditor adds it back on review.
+         Splitting one man into two invents a query against someone who did
+         nothing wrong, and that goes to the client. Silence is the safer
+         failure, so this leans toward merging. */
+      const shorter = Math.min(x.length, y.length);
+      const room = shorter >= 8 ? 3 : shorter >= 6 ? 2 : 1;
+      if (distance(x, y) <= room) { used.add(i); shared++; break; }
+    }
+  }
+
+  /* One shared word is enough only when one of the names is a single word —
+     "Prashant" against "Prashant Singh". Otherwise two, so that two different
+     Patels are not folded into one man. */
+  const shortest = Math.min(A.length, B.length);
+  return shared >= Math.min(2, shortest);
 }
 
 function resolveKey(known, key) {
@@ -579,8 +631,12 @@ export function visitGaps(findings) {
   const seen = new Map();        // key -> Set of months that person visited
   const months = new Set();
 
-  /* The roster is built first, so visit entries fold onto a known name rather
-     than each spelling starting a person of its own. */
+  /* The roster comes ONLY from a page that declares the agency's Collection
+     Managers. Letting visit entries add to it was badly wrong: a bank manager
+     who called in once, or the auditor themselves, became a Collection Manager
+     who had then "failed to visit" every other month. On one agency that
+     invented eleven queries where the firm had raised none, including one
+     against the auditor who signed the audit. */
   for (const f of findings) {
     for (const n of f.roster || []) {
       const k = resolveKey(roster.keys(), nameKey(n));
@@ -588,37 +644,42 @@ export function visitGaps(findings) {
     }
   }
 
+  /* Without a declared roster there is no way to know who ought to have
+     visited, and guessing produces exactly the noise described above. */
+  if (!roster.size) return [];
+
   for (const f of findings) {
     for (const v of f.visits || []) {
       const raw = nameKey(v?.cm);
       if (!raw) continue;
       const k = resolveKey(roster.keys(), raw);
-      if (!roster.has(k)) roster.set(k, String(v.cm).trim());
+      if (!roster.has(k)) continue;        // a visitor who is not a CM here
       if (!seen.has(k)) seen.set(k, new Set());
       const m = splitMonths([v?.month])[0];
       if (m) { seen.get(k).add(m); months.add(m); }
     }
   }
 
-  if (!roster.size || !months.size) return [];
+  if (!months.size) return [];
 
-  /* --------------------------------------------------------------------
-     The period is the busiest three months, not every month that appears.
-     A visit register runs beyond the quarter under audit, and counting the
-     stragglers at either end invented a gap for every manager who simply
-     had no reason to visit in a month outside the period.
-     -------------------------------------------------------------------- */
+  /* A visit register runs well past the audit period — Focus carried entries
+     from Mar'26 to Jul'26 on a quarter ending June — so taking every month
+     seen produced gaps for months nobody was being audited on. The period is
+     the busiest three-month window of visit traffic instead. */
   const weight = new Map();
-  for (const set of seen.values()) for (const m of set)
+  for (const mine of seen.values()) for (const m of mine)
     weight.set(m, (weight.get(m) || 0) + 1);
 
   const ordered = [...weight.keys()].sort((a, b) => monthOrder(a) - monthOrder(b));
-  let best = -1, from = 0;
-  ordered.forEach((m, i) => {
-    const w = ordered.slice(i, i + 3).reduce((t, x) => t + weight.get(x), 0);
-    if (w > best) { best = w; from = i; }
-  });
-  const period = ordered.slice(from, from + 3);
+  let best = -1, from = ordered[0];
+  for (const m of ordered) {
+    const lo = monthOrder(m);
+    const w = ordered.filter(x => monthOrder(x) >= lo && monthOrder(x) <= lo + 2)
+                     .reduce((t, x) => t + weight.get(x), 0);
+    if (w > best) { best = w; from = m; }
+  }
+  const period = ordered.filter(m =>
+    monthOrder(m) >= monthOrder(from) && monthOrder(m) <= monthOrder(from) + 2);
   if (!period.length) return [];
 
   const never = [];
@@ -632,30 +693,6 @@ export function visitGaps(findings) {
     const key = joinMonths(gaps);
     if (!missing.has(key)) missing.set(key, []);
     missing.get(key).push(name);
-  }
-
-  /* --------------------------------------------------------------------
-     A sanity gate, learned the hard way.
-
-     Run on Focus this produced eleven visit queries where the auditor wrote
-     none, because misread spellings split one manager into several and each
-     half inherited the other's gaps. Eleven invented rows cost more review
-     time than the two real ones save.
-
-     So when most of the roster appears to have gaps, the reading is not to
-     be trusted — the register was misread, not neglected — and it is
-     reported as one thing to check rather than as a page of queries.
-     -------------------------------------------------------------------- */
-  const flagged = never.length + [...missing.values()].reduce((n, v) => n + v.length, 0);
-  if (flagged > Math.max(2, Math.ceil(roster.size * 0.4))) {
-    return [{
-      category: 'Visitor Register Verifications',
-      text: `Visit register could not be read reliably — ${flagged} of ${roster.size} ` +
-            `Collection Managers appear to have missing visits. Check the register by hand.`,
-      document: 'Visiting register page', field: '', who: '', month: '',
-      review: 'not raised as queries — too many to be credible',
-      sources: ['whole folder']
-    }];
   }
 
   const out = [];

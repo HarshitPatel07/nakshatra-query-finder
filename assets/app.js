@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages, setTiling, setProvider, turned } from './scan.js?v=33';
-import { readBatch, collate, checkKey } from './audit.js?v=33';
-import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=33';
-import { loadLearned, forgetLearned } from './corpus.js?v=33';
+import { groupByAgency, countPages, pages, setTiling, setProvider, turned } from './scan.js?v=35';
+import { readBatch, collate, checkKey } from './audit.js?v=35';
+import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=35';
+import { loadLearned, forgetLearned } from './corpus.js?v=35';
 
 const $ = s => document.querySelector(s);
 
@@ -248,7 +248,7 @@ $('#mprep').addEventListener('click', async () => {
   $('#mstat').textContent = 'rendering pages…';
 
   try {
-    const { bundle, promptFor, download } = await import('./manual.js?v=33');
+    const { bundle, promptFor, download } = await import('./manual.js?v=35');
     const { parts, index, pageCount } = await bundle(agency, {
       per,
       onProgress: n => { $('#mstat').textContent = `rendering page ${n}…`; }
@@ -287,7 +287,7 @@ $('#mread').addEventListener('click', async () => {
   if (!text) { $('#mreadstat').textContent = 'paste the reply first'; return; }
 
   try {
-    const { parseReply } = await import('./manual.js?v=33');
+    const { parseReply } = await import('./manual.js?v=35');
     const findings = parseReply(text, manual.index);
     const observations = collate(findings);
 
@@ -329,7 +329,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=33');
+    const { importWorkbook } = await import('./import.js?v=35');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -1000,7 +1000,7 @@ $('#xlsx').addEventListener('click', async () => {
   const was = btn.textContent;
   btn.textContent = 'Writing…';
   try {
-    const { writeWorkbook } = await import('./export.js?v=33');
+    const { writeWorkbook } = await import('./export.js?v=35');
     const name = results.length === 1
       ? `${results[0].agency.replace(/[^\w .-]+/g, '_')} - Query sheet.xlsx`
       : 'Query sheet.xlsx';
