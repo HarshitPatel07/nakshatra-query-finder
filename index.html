@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Nakshatra Query Finder</title>
-<link rel="stylesheet" href="assets/app.css?v=21">
+<link rel="stylesheet" href="assets/app.css?v=22">
 </head>
 <body>
 
@@ -63,6 +63,50 @@
         &nbsp;<select id="model" style="width:auto;display:inline-block;padding:4px 8px"></select>
       </span>
     </p>
+  </section>
+
+  <!-- ============ 1a. NO KEY ============ -->
+  <section class="panel no-print" id="p-nokey">
+    <h2>No API key? Use Google AI Studio free</h2>
+    <p class="note" style="margin-bottom:12px">
+      <b>aistudio.google.com</b> is free in the browser &mdash; no key, no card &mdash; and runs a
+      better model than any free API tier. It is a chat window rather than an API, so this
+      does everything around it: it turns your folder into numbered page images, writes the
+      prompt, and takes the reply back to produce the same query sheet. Your pages never pass
+      through this app's server, because it hasn't got one.
+    </p>
+    <div class="row">
+      <label class="fld" style="width:auto;margin-bottom:0">
+        <span class="lbl">Pages per bundle</span>
+        <select id="mper" style="width:auto;padding:6px 10px">
+          <option value="8">8 &mdash; most careful</option>
+          <option value="12" selected>12</option>
+          <option value="20">20 &mdash; fewest rounds</option>
+        </select>
+      </label>
+      <button class="btn ghost sm" id="mprep" style="margin-bottom:1px">Prepare the folder</button>
+      <span class="meta" id="mstat"></span>
+    </div>
+
+    <div id="msteps" class="hide" style="margin-top:16px">
+      <ol style="margin-left:18px;font-size:13.5px;line-height:2">
+        <li>
+          <button class="btn ghost sm" id="mcopy">Copy the prompt</button>
+          then open <a href="https://aistudio.google.com" target="_blank" rel="noopener">aistudio.google.com</a>
+          and paste it in
+        </li>
+        <li><span id="mzips"></span> &mdash; unzip and upload the images to that chat</li>
+        <li>Let it answer, then copy its whole reply and paste it below</li>
+      </ol>
+      <textarea id="mreply" rows="4" spellcheck="false"
+        placeholder="Paste the reply here, then press Read it"
+        style="width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:6px;
+               font:12px/1.5 var(--mono);resize:vertical;margin-top:8px"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="mread">Read it</button>
+        <span class="meta" id="mreadstat"></span>
+      </div>
+    </div>
   </section>
 
   <!-- ============ 1b. LEARN ============ -->
@@ -132,6 +176,12 @@
       <div class="bad" id="s-failed-wrap" style="display:none"><b id="s-failed">0</b>pages lost</div>
     </div>
 
+    <p class="note" style="margin:-4px 0 10px">
+      Keep this tab in front while it runs. Browsers throttle page rendering in
+      background tabs, so switching away pauses it &mdash; it picks up again when
+      you come back, but it will not progress while hidden.
+    </p>
+
     <div class="row" style="justify-content:space-between;margin-bottom:10px">
       <span class="meta" id="pstat"></span>
       <button class="btn ghost sm" id="stop">Stop</button>
@@ -154,6 +204,6 @@
 
 </div>
 
-<script src="assets/app.js?v=21" type="module"></script>
+<script src="assets/app.js?v=22" type="module"></script>
 </body>
 </html>

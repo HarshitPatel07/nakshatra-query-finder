@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=21';
-import { readBatch, collate, checkKey } from './audit.js?v=21';
-import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=21';
-import { loadLearned, forgetLearned } from './corpus.js?v=21';
+import { groupByAgency, countPages, pages } from './scan.js?v=22';
+import { readBatch, collate, checkKey } from './audit.js?v=22';
+import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=22';
+import { loadLearned, forgetLearned } from './corpus.js?v=22';
 
 const $ = s => document.querySelector(s);
 
@@ -217,6 +217,93 @@ function paintPool() {
 
 function redrawCosts() { if (agencies.length) drawAgencies(); }
 
+/* --------------------------------------------------------------------------
+   No-key path: bundle the folder, hand over the prompt, take the reply back.
+   -------------------------------------------------------------------------- */
+let manual = null;   // { agency, index, prompt }
+
+$('#mprep').addEventListener('click', async () => {
+  const sel = picked();
+  if (!sel.length) {
+    $('#mstat').innerHTML = '<b style="color:var(--amber)">Pick a folder in step 2 first</b>';
+    return;
+  }
+  if (sel.length > 1) {
+    $('#mstat').innerHTML = '<b style="color:var(--amber)">Tick just one agency — ' +
+      'they have to go through the chat one at a time</b>';
+    return;
+  }
+
+  const agency = sel[0];
+  const per = +$('#mper').value;
+  $('#mprep').disabled = true;
+  $('#mstat').textContent = 'rendering pages…';
+
+  try {
+    const { bundle, promptFor, download } = await import('./manual.js?v=22');
+    const { parts, index, pageCount } = await bundle(agency, {
+      per,
+      onProgress: n => { $('#mstat').textContent = `rendering page ${n}…`; }
+    });
+
+    manual = { agency: agency.name, index, prompt: promptFor(index) };
+
+    const base = agency.name.replace(/[^\w.-]+/g, '_');
+    parts.forEach((blob, i) => download(blob,
+      parts.length > 1 ? `${base}-part${i + 1}of${parts.length}.zip` : `${base}.zip`));
+
+    $('#mzips').innerHTML = parts.length > 1
+      ? `<b>${parts.length} zip files</b> downloaded (${pageCount} pages) — do one part per chat`
+      : `<b>1 zip file</b> downloaded (${pageCount} pages)`;
+    $('#msteps').classList.remove('hide');
+    $('#mstat').innerHTML = `<b style="color:var(--green)">ready — ${pageCount} pages</b>`;
+  } catch (e) {
+    $('#mstat').innerHTML = `<b style="color:var(--red)">${esc(e.message)}</b>`;
+  } finally {
+    $('#mprep').disabled = false;
+  }
+});
+
+$('#mcopy').addEventListener('click', async () => {
+  if (!manual) return;
+  try {
+    await navigator.clipboard.writeText(manual.prompt);
+    $('#mcopy').textContent = 'Copied';
+    setTimeout(() => $('#mcopy').textContent = 'Copy the prompt', 1800);
+  } catch { alert('Could not copy — the prompt is long, try again or use a different browser.'); }
+});
+
+$('#mread').addEventListener('click', async () => {
+  if (!manual) return;
+  const text = $('#mreply').value.trim();
+  if (!text) { $('#mreadstat').textContent = 'paste the reply first'; return; }
+
+  try {
+    const { parseReply } = await import('./manual.js?v=22');
+    const findings = parseReply(text, manual.index);
+    const observations = collate(findings);
+
+    /* several parts of one folder accumulate rather than replace */
+    const prior = results.find(r => r.agency === manual.agency);
+    if (prior) {
+      const seen = new Set(prior.observations.map(o => o.text));
+      prior.observations.push(...observations.filter(o => !seen.has(o.text)));
+      prior.pages += findings.length;
+    } else {
+      results.push({ agency: manual.agency, pages: findings.length, observations });
+    }
+
+    $('#mreply').value = '';
+    $('#mreadstat').innerHTML =
+      `<b style="color:var(--green)">${findings.length} pages read, ` +
+      `${observations.length} quer${observations.length === 1 ? 'y' : 'ies'}</b> — ` +
+      `paste the next part, or scroll down for the sheet`;
+    render();
+  } catch (e) {
+    $('#mreadstat').innerHTML = `<b style="color:var(--red)">${esc(e.message)}</b>`;
+  }
+});
+
 /* ---------- learning from finished sheets -------------------------------- */
 function learnStatus() {
   const n = loadLearned().length;
@@ -234,7 +321,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=21');
+    const { importWorkbook } = await import('./import.js?v=22');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=

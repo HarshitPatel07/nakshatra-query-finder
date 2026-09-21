@@ -7,7 +7,7 @@
    being kept as an example.
    ========================================================================== */
 
-import { learn, canonCat } from './corpus.js?v=21';
+import { learn, canonCat } from './corpus.js?v=22';
 
 /* SheetJS ships only a UMD build on the allowed CDN, so it is pulled in as a
    classic script the first time an import is attempted rather than at load. */

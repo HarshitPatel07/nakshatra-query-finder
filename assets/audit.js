@@ -3,14 +3,16 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=21';
+import { PROVIDERS } from './providers.js?v=22';
 import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
-         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=21';
+         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=22';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
    last run are actually used.
    -------------------------------------------------------------------------- */
+export function buildPrompt() { return buildReadSystem(); }
+
 function buildReadSystem() {
   const docs = DOCUMENTS.map(d =>
     `- ${d.name}  [category: ${d.cat}]\n` +
