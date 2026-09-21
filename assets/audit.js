@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=30';
+import { PROVIDERS } from './providers.js?v=32';
 import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
-         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=30';
+         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=32';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
@@ -72,6 +72,8 @@ Reply with ONLY a JSON object, no prose and no code fence:
 {"pages":[{"page":<1-based number within THIS batch>,
   "doc":"<which document this page is>",
   "month":"<e.g. Jun'26, or empty if not legible>",
+  "visits":"<ONLY on a Bank Manager Agency Visit Register page — otherwise omit. An array of every entry you can read on it: [{\"cm\":\"<the employee name in that row>\",\"month\":\"<the month of the visit date, e.g. Apr'26>\"}]. List every row, not just defective ones — these are compared across the whole folder afterwards to find who never visited>",
+  "roster":"<ONLY on a page that lists the agency's Collection Managers (the sign-off page or the declaration cum undertaking) — otherwise omit. An array of their names as written>",
   "signoff":"<ONLY on the Agency Visit Sign Off page — otherwise omit. An object with: date, agency, address, signedBy, designation, stamp, auditor, auditorNo, cmNames, cmIds, barcode. Copy each exactly as written; leave any you cannot read as an empty string>",
   "issues":[{"document":"<the DOCUMENT — the name of the printed page itself, e.g. 'Manpower register' or 'No Dues and Data Purging Declaration'. NEVER a category name: 'Code Of Conduct' and 'Data Security' are categories, not documents>",
              "field":"<the exact field that is blank or wrong>",
@@ -406,6 +408,8 @@ export async function readBatch(cfg, batch, signal) {
     month: p.month || '',
     /* the sign-off page carries everything rows 1-14 of the sheet need */
     signoff: (p.signoff && typeof p.signoff === 'object') ? p.signoff : null,
+    visits: Array.isArray(p.visits) ? p.visits : [],
+    roster: Array.isArray(p.roster) ? p.roster : [],
     issues: (Array.isArray(p.issues) ? p.issues : []).map(i => {
       /* corrected here, not just at phrasing time, so collation groups on the
          real document rather than on whatever the model called it */
@@ -500,6 +504,132 @@ function joinFields(list) {
   return u.slice(0, -1).join(', ') + ' & ' + u[u.length - 1];
 }
 
+/* --------------------------------------------------------------------------
+   Whole-folder checks.
+
+   "CM was not visited in the agency one time in the each month" cannot be seen
+   on any single page — it is an absence, and absences only show up once every
+   page has been read. So the visit register entries and the CM roster are
+   gathered across the folder, then compared here: anyone on the roster with no
+   entry in a month of the audit period is a query, and anyone with no entry at
+   all is the stronger "for the audit period" one.
+
+   Matching is on a loosened name, because the same person is written
+   "Rabindra Nath Haldar" on one page and "RABINDRA NATH HALDER" on the next.
+   -------------------------------------------------------------------------- */
+const loose = s => String(s || '').toLowerCase()
+  .replace(/[^a-z ]/g, ' ').replace(/\s+/g, ' ').trim();
+
+function nameKey(s) {
+  /* first and last word only — middle names come and go between pages */
+  const w = loose(s).split(' ').filter(Boolean);
+  return w.length > 1 ? w[0] + ' ' + w[w.length - 1] : w[0] || '';
+}
+
+/* How far apart two strings are, capped so it stays cheap. */
+function distance(a, b) {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > 2) return 99;
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let last = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const t = prev[j];
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1,
+                         last + (a[i - 1] === b[j - 1] ? 0 : 1));
+      last = t;
+    }
+  }
+  return prev[b.length];
+}
+
+/* --------------------------------------------------------------------------
+   The same person is written differently from page to page — "Rabindra Nath
+   Haldar" on one and "RABINDRA NATH HALDER" on the next. Left alone that puts
+   one person on the roster twice and invents a visit gap for each half, which
+   is worse than missing the real one. So a name close to one already known is
+   folded into it.
+   -------------------------------------------------------------------------- */
+function sameName(a, b) {
+  if (a === b) return true;
+  const [af, al] = a.split(' ');
+  const [bf, bl] = b.split(' ');
+  if (!al || !bl) return distance(a, b) <= 1;
+  /* surnames vary most, so allow a little more room there */
+  return distance(af, bf) <= 1 && distance(al, bl) <= 2;
+}
+
+function resolveKey(known, key) {
+  for (const k of known) if (sameName(k, key)) return k;
+  return key;
+}
+
+export function visitGaps(findings) {
+  const roster = new Map();      // key -> the best-written form of the name
+  const seen = new Map();        // key -> Set of months that person visited
+  const months = new Set();
+
+  /* The roster is built first, so visit entries fold onto a known name rather
+     than each spelling starting a person of its own. */
+  for (const f of findings) {
+    for (const n of f.roster || []) {
+      const k = resolveKey(roster.keys(), nameKey(n));
+      if (k && !roster.has(k)) roster.set(k, String(n).trim());
+    }
+  }
+
+  for (const f of findings) {
+    for (const v of f.visits || []) {
+      const raw = nameKey(v?.cm);
+      if (!raw) continue;
+      const k = resolveKey(roster.keys(), raw);
+      if (!roster.has(k)) roster.set(k, String(v.cm).trim());
+      if (!seen.has(k)) seen.set(k, new Set());
+      const m = splitMonths([v?.month])[0];
+      if (m) { seen.get(k).add(m); months.add(m); }
+    }
+  }
+
+  if (!roster.size || !months.size) return [];
+
+  /* the audit period is the span the register actually covers */
+  const period = [...months].sort((a, b) => monthOrder(a) - monthOrder(b));
+
+  const never = [];
+  const missing = new Map();     // joined months -> [names]
+
+  for (const [k, name] of roster) {
+    const mine = seen.get(k);
+    if (!mine || !mine.size) { never.push(name); continue; }
+    const gaps = period.filter(m => !mine.has(m));
+    if (!gaps.length) continue;
+    const key = joinMonths(gaps);
+    if (!missing.has(key)) missing.set(key, []);
+    missing.get(key).push(name);
+  }
+
+  const out = [];
+  if (never.length) {
+    out.push({
+      category: 'Visitor Register Verifications',
+      text: `CM was not visited in the agency for the audit period. (CM Name -:${joinNames(never)})`,
+      document: 'Visiting register page', field: '', who: joinNames(never),
+      month: '', review: '', sources: ['whole folder']
+    });
+  }
+  for (const [monthsTxt, names] of missing) {
+    out.push({
+      category: 'Visitor Register Verifications',
+      text: `CM was not visited in the agency one time in the each month for the month of ` +
+            `${monthsTxt}.(CM Name -:${joinNames(names)})`,
+      document: 'Visiting register page', field: '', who: joinNames(names),
+      month: monthsTxt, review: '', sources: ['whole folder']
+    });
+  }
+  return out;
+}
+
 export function collate(findings) {
   let flat = [];
   findings.forEach(f => (f.issues || []).forEach(i =>
@@ -559,7 +689,7 @@ export function collate(findings) {
 
   const written = new Set();          // identical sentences must not repeat
 
-  return [...byDFW.values()].map(g => {
+  const rows = [...byDFW.values()].map(g => {
     const issue = { ...g, who: g.names, month: joinMonths(g.months) };
     const odd = [...new Set(splitMonths(g.months).filter(suspect))];
     return {
@@ -580,7 +710,15 @@ export function collate(findings) {
     if (written.has(k)) return false;
     written.add(k);
     return true;
-  })
+  });
+
+  /* the absences, which no single page could have shown */
+  for (const gap of visitGaps(findings)) {
+    const k = gap.text.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!written.has(k)) { written.add(k); rows.push(gap); }
+  }
+
+  return rows
     .sort((a, b) => (a.category || '').localeCompare(b.category || '') ||
                     (a.document || '').localeCompare(b.document || ''));
 }

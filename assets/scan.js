@@ -281,4 +281,31 @@ function finish(canvas, label) {
 /* Anthropic bills vision at roughly (w x h) / 750 tokens. */
 export function imageTokens(w, h) { return Math.ceil((w * h) / 750); }
 
+/* --------------------------------------------------------------------------
+   Turn an already-rendered page image by a quarter or half turn.
+
+   Used when a page comes back unrecognised: the upright guess is based on the
+   shape of the photograph, and a page taken the other way round ends up upside
+   down instead of sideways. Rather than rely on that guess being right, the
+   caller can send the page again the other way and keep whichever reading
+   actually identified the document.
+   -------------------------------------------------------------------------- */
+export async function turned(page, degrees) {
+  const bmp = await createImageBitmap(
+    await (await fetch('data:image/jpeg;base64,' + page.b64)).blob());
+
+  const quarter = degrees === 90 || degrees === 270;
+  const cv = document.createElement('canvas');
+  cv.width = quarter ? bmp.height : bmp.width;
+  cv.height = quarter ? bmp.width : bmp.height;
+
+  const ctx = cv.getContext('2d', { alpha: false });
+  ctx.translate(cv.width / 2, cv.height / 2);
+  ctx.rotate(degrees * Math.PI / 180);
+  ctx.drawImage(bmp, -bmp.width / 2, -bmp.height / 2);
+  bmp.close();
+
+  return { ...finish(cv, `${page.label} [turned ${degrees}°]`), turnedFrom: page.label };
+}
+
 /* Costing lives in providers.js, where the per-model rates are. */

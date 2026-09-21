@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages, setTiling, setProvider } from './scan.js?v=30';
-import { readBatch, collate, checkKey } from './audit.js?v=30';
-import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=30';
-import { loadLearned, forgetLearned } from './corpus.js?v=30';
+import { groupByAgency, countPages, pages, setTiling, setProvider, turned } from './scan.js?v=32';
+import { readBatch, collate, checkKey } from './audit.js?v=32';
+import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=32';
+import { loadLearned, forgetLearned } from './corpus.js?v=32';
 
 const $ = s => document.querySelector(s);
 
@@ -248,7 +248,7 @@ $('#mprep').addEventListener('click', async () => {
   $('#mstat').textContent = 'rendering pages…';
 
   try {
-    const { bundle, promptFor, download } = await import('./manual.js?v=30');
+    const { bundle, promptFor, download } = await import('./manual.js?v=32');
     const { parts, index, pageCount } = await bundle(agency, {
       per,
       onProgress: n => { $('#mstat').textContent = `rendering page ${n}…`; }
@@ -287,7 +287,7 @@ $('#mread').addEventListener('click', async () => {
   if (!text) { $('#mreadstat').textContent = 'paste the reply first'; return; }
 
   try {
-    const { parseReply } = await import('./manual.js?v=30');
+    const { parseReply } = await import('./manual.js?v=32');
     const findings = parseReply(text, manual.index);
     const observations = collate(findings);
 
@@ -329,7 +329,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=30');
+    const { importWorkbook } = await import('./import.js?v=32');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -726,6 +726,26 @@ async function run() {
           log(`  ${detected.label}: read ${chunk.length} pages — ${n} issue${n === 1 ? '' : 's'}` +
               (docs.length ? ` · saw: ${docs.join(', ')}` : ' · did not identify any document'),
               n ? 'warn' : (docs.length ? 'ok' : 'err'));
+          /* A page the model could not identify is very often one photographed
+             the other way round, so the upright guess left it upside down.
+             Send those few again turned half a turn and keep whichever reading
+             actually recognised the document. */
+          const lost = got.filter(g => !g.doc && !g.issues.length)
+                          .map(g => chunk.find(c => c.label === g.label))
+                          .filter(c => c && !c.turnedFrom);
+          if (lost.length && lost.length < chunk.length) {
+            log(`  ${lost.length} page(s) unrecognised — trying them the other way up`, 'warn');
+            const flipped = await Promise.all(lost.map(p => turned(p, 180)));
+            try {
+              const second = await readBatch({ ...C }, flipped, abort.signal);
+              const better = second.filter(s => s.doc || s.issues.length);
+              if (better.length) {
+                findings.push(...better.map(s => ({ ...s, label: s.label.replace(/ \[turned.*$/, '') })));
+                log(`  recovered ${better.length} page(s) by turning them`, 'ok');
+              }
+            } catch { /* the first reading stands */ }
+          }
+
           /* move to the next model so no single quota carries the folder */
           rotateModel();
         } catch (e) {
@@ -980,7 +1000,7 @@ $('#xlsx').addEventListener('click', async () => {
   const was = btn.textContent;
   btn.textContent = 'Writing…';
   try {
-    const { writeWorkbook } = await import('./export.js?v=30');
+    const { writeWorkbook } = await import('./export.js?v=32');
     const name = results.length === 1
       ? `${results[0].agency.replace(/[^\w .-]+/g, '_')} - Query sheet.xlsx`
       : 'Query sheet.xlsx';
