@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=17';
-import { readBatch, collate, checkKey } from './audit.js?v=17';
-import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=17';
-import { loadLearned, forgetLearned } from './corpus.js?v=17';
+import { groupByAgency, countPages, pages } from './scan.js?v=18';
+import { readBatch, collate, checkKey } from './audit.js?v=18';
+import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=18';
+import { loadLearned, forgetLearned } from './corpus.js?v=18';
 
 const $ = s => document.querySelector(s);
 
@@ -112,7 +112,16 @@ async function identifyOne(key, signal, say) {
       if (e.name === 'AbortError') throw e;
     }
   }
-  return { key, provider: id, error: 'no model would run' };
+  /* Every candidate refused the probe. That is usually the provider shedding
+     load, not a broken key — the provider did accept it a moment ago when it
+     listed the models. Hand back the best-ranked model anyway and let the
+     run's own retries deal with it, because refusing to start is worse than
+     starting on a model that might be busy. */
+  return {
+    key, provider: id, model: pick.model, label: pretty(pick.model),
+    candidates: pick.candidates || [pick.model],
+    offered: found.models || [], spent: false, unverified: true
+  };
 }
 
 async function identify(raw) {
@@ -180,7 +189,8 @@ function paintPool() {
     const style = p.spent ? 'opacity:.5;text-decoration:line-through'
                 : live ? 'font-weight:700' : 'opacity:.75';
     return `<span style="${style}">${mark} ${esc(PROVIDERS[p.provider].label.split(' — ')[0])}` +
-           ` ${esc(p.label)}<span class="pill">…${esc(p.key.slice(-4))}</span></span>`;
+           ` ${esc(p.label)}${p.unverified ? ' <i>(unconfirmed — provider was busy)</i>' : ''}` +
+           `<span class="pill">…${esc(p.key.slice(-4))}</span></span>`;
   }).join(' &nbsp; ');
 
   const spent = pool.filter(p => p.spent).length;
@@ -212,7 +222,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=17');
+    const { importWorkbook } = await import('./import.js?v=18');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -510,13 +520,30 @@ $('#stop').addEventListener('click', () => {
 });
 
 async function run() {
-  const C = cfg();
-  if (!C.key) { alert('Paste an AI API key first.'); $('#key').focus(); return; }
-  if (!C.provider || !C.model) {
-    alert('That key was not recognised yet — check the message under the key box.');
-    $('#key').focus();
-    return;
+  /* The box is the source of truth for "did you give me a key". The pool is
+     only what identification made of it, and identification can still be
+     running, or can have failed because the provider was busy — neither means
+     the user forgot to paste something. */
+  const typed = splitKeys($('#key').value);
+  if (!typed.length) { alert('Paste an AI API key first.'); $('#key').focus(); return; }
+
+  if (!pool.length) {
+    $('#p-prog').classList.remove('hide');
+    $('#log').innerHTML = '';
+    startProgress(0);
+    phase('Checking the key…');
+    log('key not identified yet — checking now');
+    await identify($('#key').value);
+    if (!pool.length) {
+      stopProgress('Could not use any key');
+      alert('None of those keys would run.\n\n' +
+            'Check the message under the key box — if it says the provider is ' +
+            'busy rather than that the key is bad, wait a few minutes and try again.');
+      return;
+    }
   }
+
+  const C = cfg();
   const sel = picked();
 
   abort = new AbortController();
