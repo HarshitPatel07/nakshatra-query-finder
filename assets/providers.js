@@ -410,12 +410,28 @@ function pretty(id) {
 }
 
 /* Roughly (w x h)/750 tokens per page; good enough to price a folder. */
-export function estimateCost(pageCount, providerId, modelId) {
+/* Roughly 2450 tokens for a page image at the size we send, plus the system
+   prompt — checklist, document list and worked examples — which is about 2600
+   tokens and is re-sent with EVERY batch, not once per run. At six pages a
+   batch that is another ~430 a page, so ignoring it understates the bill by
+   more than a tenth.
+
+   What this still does NOT include, and cannot:
+     · retries — a batch that is refused twice costs three times
+     · thinking tokens, which are billed as output and vary with the page
+   Treat it as a floor, not a forecast. */
+const IMAGE_TOKENS = 2450;
+const SYSTEM_TOKENS = 2600;
+const ANSWER_TOKENS = 170;
+
+export function estimateCost(pageCount, providerId, modelId, perBatch = 6) {
   const P = PROVIDERS[providerId];
   /* a provider that prices per model from its live listing */
   const m = P?.prices?.[modelId] || P?.models.find(x => x.id === modelId);
   if (!m) return null;                 // auto-picked a model with no rate on file
-  const inTok = pageCount * (2450 + 120);
-  const outTok = pageCount * 170;
+
+  const batches = Math.max(1, Math.ceil(pageCount / Math.max(1, perBatch)));
+  const inTok = pageCount * IMAGE_TOKENS + batches * SYSTEM_TOKENS;
+  const outTok = pageCount * ANSWER_TOKENS;
   return (inTok * m.in + outTok * m.out) / 1e6;
 }

@@ -1,13 +1,13 @@
 /* ==========================================================================
-   app.js — wiring: pick folder, show cost, run the review, render results
+   app.js — wiring: pick folder, run the review, render results
    ========================================================================== */
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=19';
-import { readBatch, collate, checkKey } from './audit.js?v=19';
-import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=19';
-import { loadLearned, forgetLearned } from './corpus.js?v=19';
+import { groupByAgency, countPages, pages } from './scan.js?v=20';
+import { readBatch, collate, checkKey } from './audit.js?v=20';
+import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=20';
+import { loadLearned, forgetLearned } from './corpus.js?v=20';
 
 const $ = s => document.querySelector(s);
 
@@ -222,7 +222,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=19');
+    const { importWorkbook } = await import('./import.js?v=20');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -470,7 +470,6 @@ function drawAgencies() {
       <td><span class="agency-name">${esc(a.name)}</span></td>
       <td class="meta">${a.files.length} file${a.files.length > 1 ? 's' : ''}</td>
       <td class="num">${a.pages}</td>
-      <td class="num">${prov && model ? money(estimateCost(a.pages, prov, model)) : '&mdash;'}</td>
     </tr>`).join('');
 
   $('#agency-rows').querySelectorAll('.pick')
@@ -484,31 +483,14 @@ function picked() {
     .map(c => agencies[+c.dataset.i]);
 }
 
-/* A free-tier model prices at zero — say "free", not "$0.00".
-   With no key yet there is no rate to quote, so say nothing rather than $0. */
-function money(v) {
-  if (v === undefined) return 'cost shown once a key is added';
-  if (v === null) return 'rate not on file';
-  return v === 0 ? 'free' : '$' + v.toFixed(2);
-}
-
-function cost(pages) {
-  if (!detected) return undefined;
-  return estimateCost(pages, detected.provider, detected.model);
-}
-
 function totals() {
   const sel = picked();
   const p = sel.reduce((n, a) => n + a.pages, 0);
-  const each = sel.map(a => cost(a.pages));
-  const known = each.every(v => typeof v === 'number');
-  const c = known ? each.reduce((n, v) => n + v, 0) : (detected ? null : undefined);
-  /* Free quotas count requests, so say how many this will take before it runs */
+  /* Quotas count requests, so say how many this will take before it runs */
   const calls = sel.reduce((n, a) => n + Math.ceil(a.pages / batchSize()), 0);
   $('#tot-line').textContent =
     `${sel.length} agency folder${sel.length === 1 ? '' : 's'} · ${p} pages · ` +
-    `${calls} request${calls === 1 ? '' : 's'} · ` +
-    (typeof c === 'number' ? 'about ' + money(c) : money(c));
+    `${calls} request${calls === 1 ? '' : 's'}`;
   $('#run').disabled = !sel.length;
 }
 
