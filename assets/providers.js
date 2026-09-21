@@ -132,6 +132,110 @@ export const PROVIDERS = {
 
   /* ---------------------------------------------------------------------- */
 
+  openrouter: {
+    label: 'OpenRouter',
+    keyHint: 'sk-or-v1-...',
+    keyUrl: 'openrouter.ai → Keys',
+    freeTier: true,
+    note: 'One key reaching every provider, so a busy or exhausted model is ' +
+          'routed around rather than stopping the run. Free models exist but ' +
+          'are the weakest; the paid ones here are still fractions of a penny ' +
+          'a page. Check openrouter.ai for each model’s data-retention terms ' +
+          'before sending client evidence.',
+    /* Distinctive enough to test before OpenAI's bare "sk-". */
+    keyPattern: /^sk-or-/,
+
+    prefer: [
+      'google/gemini-2.5-pro', 'anthropic/claude-sonnet-4.5', 'openai/gpt-4o',
+      'google/gemini-2.5-flash', 'qwen/qwen2.5-vl-72b-instruct'
+    ],
+
+    /* Only models that can actually take an image are any use here, and the
+       list is filtered to those before anything else looks at it. */
+    listUrl: () => 'https://openrouter.ai/api/v1/models',
+    listHeaders: key => ({ authorization: 'Bearer ' + key }),
+    parseList(j) {
+      const usable = (j.data || [])
+        .filter(m => (m.architecture?.input_modalities || []).includes('image'))
+          /* ":batch" is the queued endpoint — cheaper, but it returns later
+           rather than now, so it is no use to an interactive run. */
+        .filter(m => !/lyria|whisper|tts|embed|moderation|auto|:batch|:online/i.test(m.id));
+      /* Prices come with the listing and vary per model, so keep them rather
+         than showing "rate not on file" for every one of several hundred. */
+      this.prices = {};
+      for (const m of usable) {
+        const inP = parseFloat(m.pricing?.prompt || 0) * 1e6;
+        const outP = parseFloat(m.pricing?.completion || 0) * 1e6;
+        if (inP >= 0 && outP >= 0) this.prices[m.id] = { in: inP, out: outP };
+      }
+      return usable.map(m => m.id);
+    },
+    prices: {},
+
+    /* Hundreds of models come and go, so score the id by family rather than
+       keeping a list that is stale within the month. */
+    rank(id) {
+      const s = id.toLowerCase();
+      let n = 0;
+      if (s.startsWith('google/gemini')) n = 900;
+      else if (s.startsWith('anthropic/claude')) n = 950;
+      else if (s.startsWith('openai/gpt')) n = 880;
+      else if (s.startsWith('qwen/')) n = 700;
+      else if (s.startsWith('mistralai/')) n = 650;
+      else if (s.startsWith('meta-llama/')) n = 600;
+      else if (s.startsWith('google/gemma')) n = 500;
+      else n = 300;
+
+      if (/pro|opus|sonnet-4|gpt-5|4o(?!-mini)/.test(s)) n += 120;
+      if (/flash|mini|nano|lite|small|haiku/.test(s)) n -= 60;
+      if (/:free/.test(s)) n -= 200;          // free variants are rate-limited and weaker
+      if (/preview|beta|exp/.test(s)) n -= 30;
+
+      /* A version is one or two digits, optionally with one decimal. Model
+         names also carry date stamps — "mistral-small-2603" — and reading
+         2603 as a version number puts a small model above Claude Opus. */
+      const ver = /(?:^|[-\s])(\d{1,2}(?:\.\d)?)(?![\d.])/.exec(s.replace(/^[^/]*\//, ''));
+      return n + Math.min(parseFloat(ver?.[1] || 0), 20) * 4;
+    },
+
+    models: [],       // priced live from the model list instead
+
+    build(key, model, effort, system, content) {
+      const parts = content.map(c => c.text
+        ? { type: 'text', text: c.text }
+        : { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + c.image } });
+
+      return {
+        url: 'https://openrouter.ai/api/v1/chat/completions',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer ' + key,
+          'HTTP-Referer': location.origin,      // OpenRouter asks callers to identify
+          'X-Title': 'Nakshatra Query Finder'
+        },
+        body: {
+          model,
+          max_tokens: 16000,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: parts }
+          ]
+        }
+      };
+    },
+
+    read(json) {
+      if (json.error) throw new Error(json.error.message || 'request refused');
+      const c = json.choices?.[0];
+      if (c?.finish_reason === 'content_filter') throw new Error('blocked by content filter');
+      return c?.message?.content || '';
+    },
+
+    errorOf(json) { return json?.error?.message || ''; }
+  },
+
+  /* ---------------------------------------------------------------------- */
+
   gemini: {
     label: 'Gemini — Google',
     keyHint: 'AIza...',
@@ -307,7 +411,9 @@ function pretty(id) {
 
 /* Roughly (w x h)/750 tokens per page; good enough to price a folder. */
 export function estimateCost(pageCount, providerId, modelId) {
-  const m = PROVIDERS[providerId]?.models.find(x => x.id === modelId);
+  const P = PROVIDERS[providerId];
+  /* a provider that prices per model from its live listing */
+  const m = P?.prices?.[modelId] || P?.models.find(x => x.id === modelId);
   if (!m) return null;                 // auto-picked a model with no rate on file
   const inTok = pageCount * (2450 + 120);
   const outTok = pageCount * 170;

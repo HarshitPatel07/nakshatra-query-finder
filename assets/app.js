@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=18';
-import { readBatch, collate, checkKey } from './audit.js?v=18';
-import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=18';
-import { loadLearned, forgetLearned } from './corpus.js?v=18';
+import { groupByAgency, countPages, pages } from './scan.js?v=19';
+import { readBatch, collate, checkKey } from './audit.js?v=19';
+import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=19';
+import { loadLearned, forgetLearned } from './corpus.js?v=19';
 
 const $ = s => document.querySelector(s);
 
@@ -222,7 +222,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=18');
+    const { importWorkbook } = await import('./import.js?v=19');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
