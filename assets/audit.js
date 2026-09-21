@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=23';
+import { PROVIDERS } from './providers.js?v=24';
 import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
-         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=23';
+         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=24';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the

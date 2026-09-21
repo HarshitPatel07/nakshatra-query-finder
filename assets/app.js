@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=23';
-import { readBatch, collate, checkKey } from './audit.js?v=23';
-import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=23';
-import { loadLearned, forgetLearned } from './corpus.js?v=23';
+import { groupByAgency, countPages, pages } from './scan.js?v=24';
+import { readBatch, collate, checkKey } from './audit.js?v=24';
+import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=24';
+import { loadLearned, forgetLearned } from './corpus.js?v=24';
 
 const $ = s => document.querySelector(s);
 
@@ -205,12 +205,20 @@ function paintPool() {
            `<span class="pill">…${esc(p.key.slice(-4))}</span></span>`;
   }).join(' &nbsp; ');
 
+  /* how many models the live key can rotate through — the number that decides
+     whether a free key can carry a whole folder */
+  const live = (detected?.candidates || []).filter(m => !deadModels.has(m)).length;
+  const rota = live > 1
+    ? `<br><span style="opacity:.8">rotating across <b>${live}</b> models — ` +
+      `each has its own free allowance</span>`
+    : '';
+
   const spent = pool.filter(p => p.spent).length;
   strip(
     (pool.length > 1
       ? `<b>${pool.length} keys</b> — using the first that answers` +
         (spent ? `, ${spent} spent` : '') + '<br>'
-      : '') + line,
+      : '') + line + rota,
     spent === pool.length ? 'bad' : ''
   );
 }
@@ -240,7 +248,7 @@ $('#mprep').addEventListener('click', async () => {
   $('#mstat').textContent = 'rendering pages…';
 
   try {
-    const { bundle, promptFor, download } = await import('./manual.js?v=23');
+    const { bundle, promptFor, download } = await import('./manual.js?v=24');
     const { parts, index, pageCount } = await bundle(agency, {
       per,
       onProgress: n => { $('#mstat').textContent = `rendering page ${n}…`; }
@@ -279,7 +287,7 @@ $('#mread').addEventListener('click', async () => {
   if (!text) { $('#mreadstat').textContent = 'paste the reply first'; return; }
 
   try {
-    const { parseReply } = await import('./manual.js?v=23');
+    const { parseReply } = await import('./manual.js?v=24');
     const findings = parseReply(text, manual.index);
     const observations = collate(findings);
 
@@ -321,7 +329,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=23');
+    const { importWorkbook } = await import('./import.js?v=24');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -350,6 +358,31 @@ $('#learnclear').addEventListener('click', () => {
    Returns true if it switched.
    -------------------------------------------------------------------------- */
 const deadModels = new Set();   // spent or refusing, for this session
+
+/* --------------------------------------------------------------------------
+   Spread the work across every model the key can reach, rather than draining
+   one and then moving on.
+
+   Free quotas are counted per model, so ten usable models at twenty requests
+   each is two hundred requests, not twenty. Rotating also keeps any single
+   model from being hammered hard enough to start shedding, which is what
+   produced the 503 storms. Models are taken in ranked order, so the better
+   ones still carry proportionally more of the folder.
+   -------------------------------------------------------------------------- */
+let rotateAt = 0;
+
+function rotateModel() {
+  const list = (detected?.candidates || []).filter(m => !deadModels.has(m));
+  if (list.length < 2) return false;
+
+  rotateAt = (rotateAt + 1) % list.length;
+  const next = list[rotateAt];
+  if (next === detected.model) return false;
+
+  detected.model = next;
+  detected.label = pretty(next);
+  return true;
+}
 
 /* --------------------------------------------------------------------------
    Move to the next key that still has something left. Free quotas are per key,
@@ -682,9 +715,11 @@ async function run() {
           /* Name what it thinks it looked at. "0 issues" on its own cannot be
              told apart from the model not recognising the pages at all. */
           const docs = [...new Set(got.map(g => g.doc).filter(Boolean))];
-          log(`  read ${chunk.length} pages — ${n} issue${n === 1 ? '' : 's'}` +
+          log(`  ${detected.label}: read ${chunk.length} pages — ${n} issue${n === 1 ? '' : 's'}` +
               (docs.length ? ` · saw: ${docs.join(', ')}` : ' · did not identify any document'),
               n ? 'warn' : (docs.length ? 'ok' : 'err'));
+          /* move to the next model so no single quota carries the folder */
+          rotateModel();
         } catch (e) {
           if (e.name === 'AbortError' || e.fatal) throw e;
           /* Too many findings to fit in one reply — halve the batch and let
@@ -722,6 +757,16 @@ async function run() {
             log(`  ${detected.label} is out of free quota` +
                 (e.limit ? ` (${e.limit} requests)` : ''), 'err');
             deadModels.add(detected.model);
+          } else if (e.status === 404 || e.status === 400) {
+            /* withdrawn, or refuses the request shape — it will never serve
+               this key, so drop it out of the rotation for good. */
+            log(`  ${detected.label} cannot serve this key — dropping it`, 'err');
+            deadModels.add(detected.model);
+            if (rotateModel()) {
+              log(`  trying ${detected.label}`, 'warn');
+              buf = chunk.concat(buf);
+              return;
+            }
           } else if (!e.unaffordable) {
             log(`  batch failed: ${e.message}`, 'err');
           }
