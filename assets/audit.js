@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=26';
+import { PROVIDERS } from './providers.js?v=27';
 import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
-         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=26';
+         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=27';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
@@ -442,8 +442,22 @@ function joinNames(list) {
   return u.slice(0, -1).join(', ') + ' & ' + u[u.length - 1];
 }
 
+/* The model often answers with a compound month — "May'26 & Jul'26" — in a
+   single field. Joining those again produced "May'26, May'26 & Jul'26 & Jul'26",
+   so every value is broken back into single months first. */
+function splitMonths(list) {
+  const out = [];
+  for (const raw of list.filter(Boolean)) {
+    for (const part of String(raw).split(/\s*(?:&|,|\bto\b|\band\b)\s*/i)) {
+      const m = /([A-Za-z]{3,9})\s*'?\s*(\d{2})/.exec(part);
+      if (m) out.push(`${m[1].slice(0, 3)}'${m[2]}`);   // normalise to Apr'26
+    }
+  }
+  return out;
+}
+
 function joinMonths(list) {
-  const u = [...new Set(list.filter(Boolean))].sort((a, b) => monthOrder(a) - monthOrder(b));
+  const u = [...new Set(splitMonths(list))].sort((a, b) => monthOrder(a) - monthOrder(b));
   if (u.length <= 1) return u[0] || '';
   /* a clean run of consecutive months is written "Apr'26 to Jun'26" */
   const run = u.every((m, i) => i === 0 || monthOrder(m) === monthOrder(u[i - 1]) + 1);
@@ -511,18 +525,36 @@ export function collate(findings) {
      outside that cluster is far more likely to be a misread than a real page
      — flag it for checking rather than dropping it, because dropping could
      hide a genuine finding. */
+  /* An audit covers one quarter. Take the busiest three-month window as the
+     period and flag anything outside it. Counting "seen more than once" was
+     too weak — a month misread twice looked established. */
   const tally = new Map();
   for (const g of byDFW.values())
-    for (const m of g.months) tally.set(m, (tally.get(m) || 0) + 1);
-  const common = [...tally.entries()].filter(([, n]) => n > 1).map(([m]) => monthOrder(m));
-  const lo = common.length ? Math.min(...common) : null;
-  const hi = common.length ? Math.max(...common) : null;
+    for (const m of splitMonths(g.months)) tally.set(m, (tally.get(m) || 0) + 1);
+
+  let lo = null, hi = null;
+  if (tally.size) {
+    /* Chronological, so that when two windows carry equal weight the earlier
+       one wins. Otherwise a stray later month can drag the period forward and
+       flag a genuine early month instead of the misread one. */
+    const seen = [...tally.entries()]
+      .map(([m, n]) => ({ o: monthOrder(m), n }))
+      .sort((a, b) => a.o - b.o);
+    let best = -1;
+    for (const { o } of seen) {
+      const weight = seen.filter(s => s.o >= o && s.o <= o + 2)
+                         .reduce((t, s) => t + s.n, 0);
+      if (weight > best) { best = weight; lo = o; hi = o + 2; }
+    }
+  }
   const suspect = m => lo !== null && m &&
-    (monthOrder(m) < lo - 1 || monthOrder(m) > hi + 1);
+    (monthOrder(m) < lo || monthOrder(m) > hi);
+
+  const written = new Set();          // identical sentences must not repeat
 
   return [...byDFW.values()].map(g => {
     const issue = { ...g, who: g.names, month: joinMonths(g.months) };
-    const odd = g.months.filter(suspect);
+    const odd = [...new Set(splitMonths(g.months).filter(suspect))];
     return {
       category: canonCat(g.category) || 'Process Management',
       text: g.note || phrase(issue) || g.text || '',
@@ -533,7 +565,15 @@ export function collate(findings) {
       review: odd.length ? `check the month — ${odd.join(', ')} sits outside the audit period` : '',
       sources: [...new Set(g.sources)]
     };
-  }).filter(r => r.text)
+  }).filter(r => {
+    if (!r.text) return false;
+    /* Two pages can describe the same defect in the same words — a standing
+       check seen twice, most often — and the sheet should carry it once. */
+    const k = r.text.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (written.has(k)) return false;
+    written.add(k);
+    return true;
+  })
     .sort((a, b) => (a.category || '').localeCompare(b.category || '') ||
                     (a.document || '').localeCompare(b.document || ''));
 }
