@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=29';
+import { PROVIDERS } from './providers.js?v=30';
 import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
-         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=29';
+         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=30';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
@@ -50,6 +50,10 @@ ${examples}
 Month style: ${MONTH_STYLE}
 
 HARD RULES
+- These are photographs of a book, so a page may still arrive sideways or upside down.
+  Work out which way up it is BEFORE reading it, and be especially careful to follow each
+  row across to the right person — a blank cell attributed to the wrong name is the single
+  most damaging mistake you can make here.
 - NEVER state a month, a name, an ID or a date you cannot actually read on the page.
   If the month is not legible, set "month" to "" — do not guess. A wrong month is worse
   than no month, because it is sent to the bank.

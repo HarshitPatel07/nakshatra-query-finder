@@ -167,6 +167,34 @@ function gridFor(w, h) {
   return { cols: 1, rows };
 }
 
+/* --------------------------------------------------------------------------
+   Straightening pages photographed sideways.
+
+   The Nakshatra Manual is a landscape-bound book, so every page in it is
+   wider than it is tall. Roughly one page in five comes back portrait, which
+   means the auditor turned the phone rather than the book — nine of Jayguru's
+   forty-nine, including the Manpower Register, which is where five of that
+   agency's twelve queries live. A model reading a table on its side can tell a
+   cell is empty but loses which row it belongs to, and that is exactly the
+   failure the output showed.
+
+   These photographs turn the same way, so a portrait page is rotated a quarter
+   turn anticlockwise. There is no EXIF orientation to read — it was checked,
+   and none of the pages carry one.
+   -------------------------------------------------------------------------- */
+function uprightIfSideways(src) {
+  if (src.height <= src.width) return src;
+
+  const cv = document.createElement('canvas');
+  cv.width = src.height;
+  cv.height = src.width;
+  const ctx = cv.getContext('2d', { alpha: false });
+  ctx.translate(0, cv.height);
+  ctx.rotate(-Math.PI / 2);
+  ctx.drawImage(src, 0, 0);
+  return cv;
+}
+
 async function pdfPageToJpeg(doc, pageNo, fileName) {
   const page = await doc.getPage(pageNo);
   const base = page.getViewport({ scale: 1 });
@@ -188,7 +216,7 @@ async function pdfPageToJpeg(doc, pageNo, fileName) {
   page.cleanup();
 
   const label = `${fileName} p${pageNo}`;
-  return sliceIntoTiles(full, label);
+  return sliceIntoTiles(uprightIfSideways(full), label);
 }
 
 function sliceIntoTiles(full, label) {
@@ -235,7 +263,7 @@ async function imageToJpeg(file) {
   ctx.drawImage(bmp, 0, 0, cv.width, cv.height);
   bmp.close();
 
-  return sliceIntoTiles(cv, file.name);
+  return sliceIntoTiles(uprightIfSideways(cv), file.name);
 }
 
 function finish(canvas, label) {
