@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=16';
-import { readBatch, collate, checkKey } from './audit.js?v=16';
-import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=16';
-import { loadLearned, forgetLearned } from './corpus.js?v=16';
+import { groupByAgency, countPages, pages } from './scan.js?v=17';
+import { readBatch, collate, checkKey } from './audit.js?v=17';
+import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=17';
+import { loadLearned, forgetLearned } from './corpus.js?v=17';
 
 const $ = s => document.querySelector(s);
 
@@ -27,8 +27,22 @@ const KEY_STORE = 'nq.key';
 const EFFORT_STORE = 'nq.effort';
 const OVERRIDE_STORE = 'nq.override';
 
-/* What the pasted key turned out to be. Null until a key is recognised. */
-let detected = null;
+/* --------------------------------------------------------------------------
+   The key pool.
+
+   Several keys can be pasted, one per line. Each is identified on its own, so
+   they can be different providers entirely — a paid Claude key alongside free
+   Gemini keys is a perfectly sensible mix. Free quotas are per key, so three
+   keys is three times the daily allowance, and a key that is spent or being
+   shed is stepped over rather than waited on.
+
+   `detected` is whichever key is in use right now; `pool` is all of them.
+   -------------------------------------------------------------------------- */
+let pool = [];        // [{ key, provider, model, label, candidates, spent }]
+let detected = null;  // the entry currently in use
+
+const splitKeys = s => String(s || '')
+  .split(/[\r\n,;]+/).map(x => x.trim()).filter(Boolean);
 
 let agencies = [];
 let results = [];
@@ -53,9 +67,9 @@ function keyStatus(msg, colour) {
 }
 
 function showSaved() {
-  const k = $('#key').value.trim();
-  if (!k) return keyStatus('', '');
-  keyStatus(`Saved on this browser (…${k.slice(-4)})`, 'var(--green)');
+  const n = splitKeys($('#key').value).length;
+  if (!n) return keyStatus('', '');
+  keyStatus(`${n} key${n === 1 ? '' : 's'} saved on this browser`, 'var(--green)');
 }
 
 /* ---------- detection strip --------------------------------------------- */
@@ -73,96 +87,110 @@ function strip(html, cls = '') {
    -------------------------------------------------------------------------- */
 let lookup = null;
 
-async function identify(key) {
-  lookup?.abort();
-  detected = null;
-
-  if (!key) { strip(''); redrawCosts(); return; }
-
-  strip('Checking this key&hellip;', 'busy');
-
-  lookup = new AbortController();
-  let found;
-  try {
-    found = await detectProvider(key, lookup.signal);
-  } catch (e) {
-    if (e.name === 'AbortError') return;
-    found = null;
-  }
-
-  if (!found) {
-    strip('No provider accepted this key. Check it was copied whole, and that ' +
-          'it is an <b>API</b> key rather than a password or a ChatGPT login.', 'bad');
-    redrawCosts();
-    return;
-  }
+/* Work out one key: which provider owns it, and which model it can run. */
+async function identifyOne(key, signal, say) {
+  const found = await detectProvider(key, signal);
+  if (!found) return { key, error: 'no provider accepted it' };
 
   const id = found.provider;
   const P = PROVIDERS[id];
   const pick = resolveModel(id, found.models);
-  detected = { provider: id, ...pick };
 
   /* Being offered a model is not the same as being able to use it: a free key
      lists Pro models it has zero quota for, and withdrawn models linger in the
      list. Try each in turn and keep the first that actually answers. */
-  const tried = [];
   for (const candidate of (pick.candidates || [pick.model]).slice(0, 6)) {
-    strip(`Trying <b>${esc(pretty(candidate))}</b>&hellip;`, 'busy');
+    say?.(`trying ${pretty(candidate)}`);
     try {
-      await checkKey({ provider: id, key, model: candidate, effort: 'low' }, lookup.signal);
-      detected.model = candidate;
-      detected.label = pretty(candidate);
-      detected.rejected = tried;
-      break;
+      await checkKey({ provider: id, key, model: candidate, effort: 'low' }, signal);
+      return {
+        key, provider: id, model: candidate, label: pretty(candidate),
+        candidates: pick.candidates || [candidate],
+        offered: found.models || [], spent: false
+      };
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+    }
+  }
+  return { key, provider: id, error: 'no model would run' };
+}
+
+async function identify(raw) {
+  lookup?.abort();
+  pool = []; detected = null;
+
+  const keys = splitKeys(raw);
+  if (!keys.length) { strip(''); redrawCosts(); return; }
+
+  lookup = new AbortController();
+  const sig = lookup.signal;
+  const results = [];
+
+  for (let i = 0; i < keys.length; i++) {
+    strip(`Checking key ${i + 1} of ${keys.length}&hellip;`, 'busy');
+    try {
+      results.push(await identifyOne(keys[i], sig,
+        m => strip(`Key ${i + 1} of ${keys.length} — ${esc(m)}&hellip;`, 'busy')));
     } catch (e) {
       if (e.name === 'AbortError') return;
-      tried.push({ model: candidate, why: shortWhy(e.message) });
-      detected.model = null;
+      results.push({ key: keys[i], error: e.message });
     }
   }
 
-  if (!detected.model) {
-    strip(`<b>${esc(P.label)}</b> accepted the key, but no model would run: ` +
-          esc(tried.map(t => `${pretty(t.model)} (${t.why})`).join(', ')), 'bad');
-    detected = null;
+  pool = results.filter(r => r.model);
+  const bad = results.filter(r => !r.model);
+
+  if (!pool.length) {
+    strip('No key would run. ' +
+      esc(bad.map((b, i) => `key ${i + 1}: ${b.error}`).join(' · ')) +
+      ' — check they are <b>API</b> keys, pasted whole.', 'bad');
     redrawCosts();
     return;
   }
 
-  /* an explicit override outlives the auto-pick */
+  /* an explicit override outlives the auto-pick, where the key offers it */
   const ov = store.get(OVERRIDE_STORE);
-  if (ov && (found.models || []).includes(ov)) {
-    detected.model = ov;
-    detected.label = P.models.find(m => m.id === ov)?.label || ov;
-    detected.overridden = true;
+  for (const p of pool) {
+    if (ov && p.offered.includes(ov)) { p.model = ov; p.label = pretty(ov); p.overridden = true; }
   }
 
-  /* the override list is what this key really offers, best first, with the
-     obviously-wrong modalities (image, speech, music) left out */
-  const usable = (found.models || [])
-    .filter(m => !P.excludeRe?.test(m))
-    .sort((a, b) => (P.rank ? P.rank(b) - P.rank(a) : 0));
-  const opts = usable.length ? usable : P.models.map(m => m.id);
-  if (!opts.includes(detected.model)) opts.unshift(detected.model);
+  detected = pool[0];
 
-  $('#model').innerHTML = opts
-    .map(id => `<option value="${id}">${esc(id)}</option>`).join('');
+  const opts = (detected.offered || [])
+    .filter(m => !PROVIDERS[detected.provider].excludeRe?.test(m));
+  if (!opts.includes(detected.model)) opts.unshift(detected.model);
+  $('#model').innerHTML = opts.map(id => `<option value="${id}">${esc(id)}</option>`).join('');
   $('#model').value = detected.model;
 
-  const skipped = detected.rejected?.length
-    ? ` <i>skipped ${esc(detected.rejected.map(t => pretty(t.model)).join(', '))}</i>`
-    : '';
-
-  strip(
-    `Using <b>${esc(P.label)}</b> <span class="pill">${esc(detected.label)}</span>` +
-    (detected.overridden ? ' <i>(your choice)</i>'
-      : ' — best model this key can actually run') + skipped +
-    (pick.note && !detected.overridden ? ` <i>${esc(pick.note)}</i>` : '')
-  );
-
-  $('#provnote').innerHTML = esc(P.note);
-  $('#provnote').style.color = P.freeTier ? 'var(--amber)' : 'var(--muted)';
+  paintPool();
+  $('#provnote').innerHTML = esc(PROVIDERS[detected.provider].note);
+  $('#provnote').style.color = PROVIDERS[detected.provider].freeTier
+    ? 'var(--amber)' : 'var(--muted)';
   redrawCosts();
+
+  if (bad.length) log?.(`${bad.length} key(s) could not be used`, 'warn');
+}
+
+/* Show every key in the pool, which is live, and which are spent. */
+function paintPool() {
+  if (!pool.length) return strip('');
+  const line = pool.map((p, i) => {
+    const live = p === detected;
+    const mark = p.spent ? '✕' : (live ? '▶' : '·');
+    const style = p.spent ? 'opacity:.5;text-decoration:line-through'
+                : live ? 'font-weight:700' : 'opacity:.75';
+    return `<span style="${style}">${mark} ${esc(PROVIDERS[p.provider].label.split(' — ')[0])}` +
+           ` ${esc(p.label)}<span class="pill">…${esc(p.key.slice(-4))}</span></span>`;
+  }).join(' &nbsp; ');
+
+  const spent = pool.filter(p => p.spent).length;
+  strip(
+    (pool.length > 1
+      ? `<b>${pool.length} keys</b> — using the first that answers` +
+        (spent ? `, ${spent} spent` : '') + '<br>'
+      : '') + line,
+    spent === pool.length ? 'bad' : ''
+  );
 }
 
 function redrawCosts() { if (agencies.length) drawAgencies(); }
@@ -184,7 +212,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=16');
+    const { importWorkbook } = await import('./import.js?v=17');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -214,6 +242,25 @@ $('#learnclear').addEventListener('click', () => {
    -------------------------------------------------------------------------- */
 const deadModels = new Set();   // spent or refusing, for this session
 
+/* --------------------------------------------------------------------------
+   Move to the next key that still has something left. Free quotas are per key,
+   so a second key is a fresh allowance rather than the same wall again — this
+   is tried before waiting, because waiting out a daily quota is hopeless.
+   -------------------------------------------------------------------------- */
+function nextKey(reason) {
+  if (pool.length < 2) return false;
+  if (detected) detected.spent = true;
+
+  const fresh = pool.find(p => !p.spent);
+  if (!fresh) { paintPool(); return false; }
+
+  detected = fresh;
+  deadModels.clear();            // a new key has its own model availability
+  log(`  ${reason} — switching to key …${fresh.key.slice(-4)} (${fresh.label})`, 'warn');
+  paintPool();
+  return true;
+}
+
 async function stepDownModel() {
   const list = (detected?.candidates || []).filter(m => !deadModels.has(m));
   const at = list.indexOf(detected.model);
@@ -222,7 +269,7 @@ async function stepDownModel() {
 
   for (const next of rest) {
     try {
-      await checkKey({ provider: detected.provider, key: $('#key').value.trim(),
+      await checkKey({ provider: detected.provider, key: detected.key,
                        model: next, effort: 'low' });
       log(`  switching to ${pretty(next)}`, 'warn');
       detected.model = next;
@@ -315,7 +362,7 @@ $('#model').addEventListener('change', e => {
 function cfg() {
   return {
     provider: detected?.provider,
-    key: $('#key').value.trim(),
+    key: detected?.key,
     model: detected?.model,
     effort: $('#effort').value
   };
@@ -564,8 +611,21 @@ async function run() {
             return;
           }
 
+          /* A spent quota is per key, so another key is a fresh allowance —
+             far better than waiting out a daily limit that will not lift. */
+          if (e.quotaCapped && nextKey('quota spent on this key')) {
+            buf = chunk.concat(buf);
+            return;
+          }
+
           if ((e.quotaCapped || e.exhausted) && await stepDownModel()) {
             log(`  retrying these ${chunk.length} pages on ${detected.label}`, 'warn');
+            buf = chunk.concat(buf);
+            return;
+          }
+
+          /* every model on this key is busy — another key may be served */
+          if (e.exhausted && nextKey('every model busy on this key')) {
             buf = chunk.concat(buf);
             return;
           }

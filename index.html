@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Nakshatra Query Finder</title>
-<link rel="stylesheet" href="assets/app.css?v=16">
+<link rel="stylesheet" href="assets/app.css?v=17">
 </head>
 <body>
 
@@ -29,8 +29,12 @@
 
     <div class="row" style="align-items:flex-end">
       <label class="fld" style="flex:1;min-width:260px;margin-bottom:0">
-        <span class="lbl">Paste any AI API key &mdash; Claude, OpenAI or Gemini</span>
-        <input type="password" id="key" placeholder="sk-ant-… / sk-… / AIza…" autocomplete="off">
+        <span class="lbl">Paste any AI API key &mdash; Claude, OpenAI or Gemini.
+          <b>One per line to use several.</b></span>
+        <textarea id="key" rows="2" spellcheck="false" autocomplete="off"
+          placeholder="sk-ant-… / sk-… / AIza…&#10;paste more keys on their own lines"
+          style="width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:6px;
+                 font:13px/1.5 var(--mono);resize:vertical;-webkit-text-security:disc"></textarea>
       </label>
       <label class="fld" style="width:150px;margin-bottom:0">
         <span class="lbl">Care level</span>
@@ -151,6 +155,6 @@
 
 </div>
 
-<script src="assets/app.js?v=16" type="module"></script>
+<script src="assets/app.js?v=17" type="module"></script>
 </body>
 </html>
