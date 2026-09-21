@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=25';
-import { readBatch, collate, checkKey } from './audit.js?v=25';
-import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=25';
-import { loadLearned, forgetLearned } from './corpus.js?v=25';
+import { groupByAgency, countPages, pages } from './scan.js?v=26';
+import { readBatch, collate, checkKey } from './audit.js?v=26';
+import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=26';
+import { loadLearned, forgetLearned } from './corpus.js?v=26';
 
 const $ = s => document.querySelector(s);
 
@@ -248,7 +248,7 @@ $('#mprep').addEventListener('click', async () => {
   $('#mstat').textContent = 'rendering pages…';
 
   try {
-    const { bundle, promptFor, download } = await import('./manual.js?v=25');
+    const { bundle, promptFor, download } = await import('./manual.js?v=26');
     const { parts, index, pageCount } = await bundle(agency, {
       per,
       onProgress: n => { $('#mstat').textContent = `rendering page ${n}…`; }
@@ -287,7 +287,7 @@ $('#mread').addEventListener('click', async () => {
   if (!text) { $('#mreadstat').textContent = 'paste the reply first'; return; }
 
   try {
-    const { parseReply } = await import('./manual.js?v=25');
+    const { parseReply } = await import('./manual.js?v=26');
     const findings = parseReply(text, manual.index);
     const observations = collate(findings);
 
@@ -329,7 +329,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=25');
+    const { importWorkbook } = await import('./import.js?v=26');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -964,6 +964,26 @@ $('#csv').addEventListener('click', () => {
   a.download = 'nakshatra-queries.csv';
   a.click();
   URL.revokeObjectURL(a.href);
+});
+
+$('#xlsx').addEventListener('click', async () => {
+  const btn = $('#xlsx');
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = 'Writing…';
+  try {
+    const { writeWorkbook } = await import('./export.js?v=26');
+    const name = results.length === 1
+      ? `${results[0].agency.replace(/[^\w .-]+/g, '_')} - Query sheet.xlsx`
+      : 'Query sheet.xlsx';
+    await writeWorkbook(results, name);
+    btn.textContent = 'Downloaded';
+  } catch (e) {
+    alert('Could not write the workbook — ' + e.message);
+    btn.textContent = was;
+  } finally {
+    setTimeout(() => { btn.disabled = false; btn.textContent = was; }, 2000);
+  }
 });
 
 $('#print').addEventListener('click', () => window.print());
