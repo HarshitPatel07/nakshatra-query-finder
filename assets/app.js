@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=15';
-import { readBatch, collate, checkKey } from './audit.js?v=15';
-import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=15';
-import { loadLearned, forgetLearned } from './corpus.js?v=15';
+import { groupByAgency, countPages, pages } from './scan.js?v=16';
+import { readBatch, collate, checkKey } from './audit.js?v=16';
+import { PROVIDERS, estimateCost, detectProvider, resolveModel } from './providers.js?v=16';
+import { loadLearned, forgetLearned } from './corpus.js?v=16';
 
 const $ = s => document.querySelector(s);
 
@@ -184,7 +184,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=15');
+    const { importWorkbook } = await import('./import.js?v=16');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -524,7 +524,12 @@ async function run() {
           findings.push(...got);
           const n = got.reduce((s, g) => s + g.issues.length, 0);
           prog.issues += n;
-          log(`  read ${chunk.length} pages — ${n} issue${n === 1 ? '' : 's'}`, n ? 'warn' : 'ok');
+          /* Name what it thinks it looked at. "0 issues" on its own cannot be
+             told apart from the model not recognising the pages at all. */
+          const docs = [...new Set(got.map(g => g.doc).filter(Boolean))];
+          log(`  read ${chunk.length} pages — ${n} issue${n === 1 ? '' : 's'}` +
+              (docs.length ? ` · saw: ${docs.join(', ')}` : ' · did not identify any document'),
+              n ? 'warn' : (docs.length ? 'ok' : 'err'));
         } catch (e) {
           if (e.name === 'AbortError' || e.fatal) throw e;
           /* Too many findings to fit in one reply — halve the batch and let
@@ -546,6 +551,19 @@ async function run() {
           }
           /* A model that is spent, or still overloaded after every retry, is
              not going to carry a 50-page folder — move to one with headroom. */
+          /* A provider shedding load drops the BIGGEST requests first — the
+             tiny probe gets through while six images do not. So shrink the
+             batch before touching the model: it is far more likely to be
+             accepted, and it does not re-upload the same pages to a second
+             model for nothing. */
+          if (e.exhausted && !e.quotaCapped && splitTo > 2) {
+            splitTo = Math.max(2, Math.floor(splitTo / 2));
+            log(`  provider is shedding large requests — dropping to ` +
+                `${splitTo} pages a call`, 'warn');
+            buf = chunk.concat(buf);
+            return;
+          }
+
           if ((e.quotaCapped || e.exhausted) && await stepDownModel()) {
             log(`  retrying these ${chunk.length} pages on ${detected.label}`, 'warn');
             buf = chunk.concat(buf);
