@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=20';
+import { PROVIDERS } from './providers.js?v=21';
 import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
-         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=20';
+         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=21';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
@@ -220,9 +220,15 @@ async function call(cfg, system, content, signal) {
        that ranks best is often the one that runs out first. */
     const quotaCapped = res.status === 429 && /limit:\s*\d+/i.test(detail);
 
+    /* 402 is "you cannot afford this model". Retrying the same request cannot
+       make it cheaper, so it retires the model immediately and the caller
+       moves to one the account can actually pay for. */
+    const unaffordable = res.status === 402 ||
+      /requires more credits|insufficient.*credit|can only afford/i.test(detail);
+
     /* "High demand" and unnamed rate limits ARE temporary — come back rather
        than dropping the pages. */
-    const worthRetrying = !fatal && !quotaCapped &&
+    const worthRetrying = !fatal && !quotaCapped && !unaffordable &&
       (res.status === 503 || res.status === 429 || res.status >= 500);
 
     const busy = res.status === 503;
@@ -242,6 +248,7 @@ async function call(cfg, system, content, signal) {
     err.fatal = fatal;
     err.status = res.status;
     err.quotaCapped = quotaCapped;      // this model is spent — try another
+    err.unaffordable = unaffordable;    // this model costs more than is on account
     err.limit = (/limit:\s*(\d+)/i.exec(detail) || [])[1];
     err.exhausted = worthRetrying;      // gave it every chance and it still failed
     throw err;

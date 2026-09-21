@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=20';
-import { readBatch, collate, checkKey } from './audit.js?v=20';
-import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=20';
-import { loadLearned, forgetLearned } from './corpus.js?v=20';
+import { groupByAgency, countPages, pages } from './scan.js?v=21';
+import { readBatch, collate, checkKey } from './audit.js?v=21';
+import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=21';
+import { loadLearned, forgetLearned } from './corpus.js?v=21';
 
 const $ = s => document.querySelector(s);
 
@@ -94,19 +94,30 @@ async function identifyOne(key, signal, say) {
 
   const id = found.provider;
   const P = PROVIDERS[id];
-  const pick = resolveModel(id, found.models);
+
+  /* Ask what the account can pay for before choosing, so an empty balance
+     lands on a free model rather than collecting a payment error from every
+     paid one in turn. */
+  let freeOnly = false;
+  if (P.creditState) {
+    say?.('checking credit');
+    freeOnly = (await P.creditState(key, signal)) !== 'paid';
+  }
+  const pick = resolveModel(id, found.models, { freeOnly });
 
   /* Being offered a model is not the same as being able to use it: a free key
      lists Pro models it has zero quota for, and withdrawn models linger in the
      list. Try each in turn and keep the first that actually answers. */
-  for (const candidate of (pick.candidates || [pick.model]).slice(0, 6)) {
+  /* Walk deep enough to matter: free models are individually rate-limited, so
+     several in a row can refuse while one further down answers immediately. */
+  for (const candidate of (pick.candidates || [pick.model]).slice(0, 10)) {
     say?.(`trying ${pretty(candidate)}`);
     try {
       await checkKey({ provider: id, key, model: candidate, effort: 'low' }, signal);
       return {
         key, provider: id, model: candidate, label: pretty(candidate),
         candidates: pick.candidates || [candidate],
-        offered: found.models || [], spent: false
+        offered: found.models || [], spent: false, freeOnly
       };
     } catch (e) {
       if (e.name === 'AbortError') throw e;
@@ -120,7 +131,7 @@ async function identifyOne(key, signal, say) {
   return {
     key, provider: id, model: pick.model, label: pretty(pick.model),
     candidates: pick.candidates || [pick.model],
-    offered: found.models || [], spent: false, unverified: true
+    offered: found.models || [], spent: false, unverified: true, freeOnly
   };
 }
 
@@ -189,7 +200,8 @@ function paintPool() {
     const style = p.spent ? 'opacity:.5;text-decoration:line-through'
                 : live ? 'font-weight:700' : 'opacity:.75';
     return `<span style="${style}">${mark} ${esc(PROVIDERS[p.provider].label.split(' — ')[0])}` +
-           ` ${esc(p.label)}${p.unverified ? ' <i>(unconfirmed — provider was busy)</i>' : ''}` +
+           ` ${esc(p.label)}${p.freeOnly ? ' <i>(free models — account has no credit)</i>' : ''}` +
+           `${p.unverified ? ' <i>(unconfirmed — provider was busy)</i>' : ''}` +
            `<span class="pill">…${esc(p.key.slice(-4))}</span></span>`;
   }).join(' &nbsp; ');
 
@@ -222,7 +234,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=20');
+    const { importWorkbook } = await import('./import.js?v=21');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -598,11 +610,32 @@ async function run() {
             return;
           }
 
+          /* Not enough credit for this model. Retrying cannot make it cheaper,
+             so retire it and fall to one the account can actually pay for. */
+          if (e.unaffordable) {
+            log(`  ${detected.label} costs more than this account has — ` +
+                `moving to a model it can run`, 'err');
+            deadModels.add(detected.model);
+            if (!detected.freeOnly) {
+              detected.freeOnly = true;
+              const only = resolveModel(detected.provider, detected.offered, { freeOnly: true });
+              if (only?.model) {
+                detected.model = only.model;
+                detected.label = pretty(only.model);
+                detected.candidates = only.candidates;
+                log(`  switching to free models — now on ${detected.label}`, 'warn');
+                paintPool();
+                buf = chunk.concat(buf);
+                return;
+              }
+            }
+          }
+
           if (e.quotaCapped) {
             log(`  ${detected.label} is out of free quota` +
                 (e.limit ? ` (${e.limit} requests)` : ''), 'err');
             deadModels.add(detected.model);
-          } else {
+          } else if (!e.unaffordable) {
             log(`  batch failed: ${e.message}`, 'err');
           }
           /* A model that is spent, or still overloaded after every retry, is
@@ -627,7 +660,7 @@ async function run() {
             return;
           }
 
-          if ((e.quotaCapped || e.exhausted) && await stepDownModel()) {
+          if ((e.quotaCapped || e.exhausted || e.unaffordable) && await stepDownModel()) {
             log(`  retrying these ${chunk.length} pages on ${detected.label}`, 'warn');
             buf = chunk.concat(buf);
             return;

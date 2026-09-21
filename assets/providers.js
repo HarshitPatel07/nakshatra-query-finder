@@ -172,6 +172,22 @@ export const PROVIDERS = {
     },
     prices: {},
 
+    /* An account with no credit can only run the ":free" models. Asking first
+       is far better than discovering it one payment error at a time. */
+    async creditState(key, signal) {
+      try {
+        const r = await fetch('https://openrouter.ai/api/v1/key',
+          { headers: { authorization: 'Bearer ' + key }, signal });
+        if (!r.ok) return 'unknown';
+        const d = (await r.json())?.data || {};
+        const left = d.limit_remaining;
+        if (typeof left === 'number') return left > 0.05 ? 'paid' : 'empty';
+        /* limit_remaining is null on both an unlimited paid account and a
+           free one; usage above zero means charges have gone through. */
+        return (d.usage || 0) > 0 ? 'paid' : 'unknown';
+      } catch { return 'unknown'; }
+    },
+
     /* Hundreds of models come and go, so score the id by family rather than
        keeping a list that is stale within the month. */
     rank(id) {
@@ -186,6 +202,9 @@ export const PROVIDERS = {
       else if (s.startsWith('google/gemma')) n = 500;
       else n = 300;
 
+      /* "-vl" marks a vision-language build — made for reading images rather
+         than handling them as an afterthought, which is the whole job here. */
+      if (/-vl\b|vision/.test(s)) n += 90;
       if (/pro|opus|sonnet-4|gpt-5|4o(?!-mini)/.test(s)) n += 120;
       if (/flash|mini|nano|lite|small|haiku/.test(s)) n -= 60;
       if (/:free/.test(s)) n -= 200;          // free variants are rate-limited and weaker
@@ -347,9 +366,27 @@ export async function detectProvider(key, signal) {
    cannot list models (some keys are scoped without that permission).
    Returns { model, label, detected, note }.
    -------------------------------------------------------------------------- */
-export function resolveModel(providerId, available) {
+export function resolveModel(providerId, available, opts = {}) {
   const P = PROVIDERS[providerId];
   const named = id => P.models.find(m => m.id === id);
+
+  /* With no credit, only the free models can run at all — so rank those and
+     ignore the rest, rather than walking down dozens of paid ones collecting
+     a payment error from each. */
+  if (opts.freeOnly) {
+    const free = (available || []).filter(id =>
+      /:free$/.test(id) || (P.prices?.[id] &&
+        P.prices[id].in === 0 && P.prices[id].out === 0));
+    if (free.length) {
+      const sorted = P.rank
+        ? free.slice().sort((a, b) => P.rank(b) - P.rank(a))
+        : free;
+      return {
+        model: sorted[0], label: pretty(sorted[0]), detected: true,
+        candidates: sorted.slice(0, 14), freeOnly: true
+      };
+    }
+  }
 
   if (!available || !available.length) {
     const fb = P.prefer[0];
