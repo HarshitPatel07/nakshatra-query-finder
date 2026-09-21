@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=28';
+import { PROVIDERS } from './providers.js?v=29';
 import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
-         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=28';
+         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=29';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
@@ -68,6 +68,7 @@ Reply with ONLY a JSON object, no prose and no code fence:
 {"pages":[{"page":<1-based number within THIS batch>,
   "doc":"<which document this page is>",
   "month":"<e.g. Jun'26, or empty if not legible>",
+  "signoff":"<ONLY on the Agency Visit Sign Off page — otherwise omit. An object with: date, agency, address, signedBy, designation, stamp, auditor, auditorNo, cmNames, cmIds, barcode. Copy each exactly as written; leave any you cannot read as an empty string>",
   "issues":[{"document":"<the DOCUMENT — the name of the printed page itself, e.g. 'Manpower register' or 'No Dues and Data Purging Declaration'. NEVER a category name: 'Code Of Conduct' and 'Data Security' are categories, not documents>",
              "field":"<the exact field that is blank or wrong>",
              "who":"<the CM or Executive named on that row, or empty>",
@@ -399,6 +400,8 @@ export async function readBatch(cfg, batch, signal) {
     label: batch[(p.page || 1) - 1]?.label || batch[0]?.label || '?',
     doc: p.doc || '',
     month: p.month || '',
+    /* the sign-off page carries everything rows 1-14 of the sheet need */
+    signoff: (p.signoff && typeof p.signoff === 'object') ? p.signoff : null,
     issues: (Array.isArray(p.issues) ? p.issues : []).map(i => {
       /* corrected here, not just at phrasing time, so collation groups on the
          real document rather than on whatever the model called it */

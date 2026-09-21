@@ -7,10 +7,26 @@ import * as pdfjs from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.6.82/pdf
 pdfjs.GlobalWorkerOptions.workerSrc =
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.6.82/pdf.worker.min.mjs';
 
-/* Anthropic downsizes anything past 1568px on the long edge, so that is the
-   most detail we can pay for. Handwriting needs every pixel of it. */
-export const MAX_EDGE = 1568;
-export const JPEG_Q   = 0.82;
+/* --------------------------------------------------------------------------
+   How large a page image is worth sending.
+
+   This was pinned at 1568 for every provider, which is Anthropic's limit —
+   anything larger is downscaled at their end. But Gemini takes 3072, so half
+   the available detail was being thrown away on the provider actually in use,
+   and on these register pages detail is the whole game: the difference between
+   seeing a cell is blank and reading whose row it is.
+   -------------------------------------------------------------------------- */
+const EDGE_BY_PROVIDER = {
+  anthropic: 1568,
+  gemini: 3072,
+  openai: 2048,
+  openrouter: 2048      // varies by model underneath; 2048 is safe across them
+};
+
+export let MAX_EDGE = 1568;
+export function setProvider(id) { MAX_EDGE = EDGE_BY_PROVIDER[id] || 1568; }
+
+export const JPEG_Q = 0.82;
 
 const IMG_RE = /\.(jpe?g|png|webp|gif|bmp)$/i;
 const PDF_RE = /\.pdf$/i;
@@ -132,13 +148,23 @@ const TILE_OVERLAP = 0.07;     // share of a tile repeated in its neighbour
 export let TILING = false;
 export function setTiling(on) { TILING = !!on; }
 
+/* --------------------------------------------------------------------------
+   NEVER cut a register page vertically.
+
+   A grid of tiles was tried and made things markedly worse: on these pages the
+   names sit in a left-hand column and the data spreads right, so a vertical
+   cut puts the name and the blank cell in different images. The model then
+   reports blanks it cannot attribute and names it has no data for — every
+   observation came back without a person on it.
+
+   Horizontal bands keep every row whole, name and all. They buy less detail
+   than a grid would, but they buy it without breaking the one association the
+   entire task depends on.
+   -------------------------------------------------------------------------- */
 function gridFor(w, h) {
   if (!TILING) return { cols: 1, rows: 1 };
-  const cols = Math.max(1, Math.ceil(w / MAX_EDGE));
-  const rows = Math.max(1, Math.ceil(h / MAX_EDGE));
-  /* nine tiles for one page is past the point of usefulness */
-  return (cols * rows > 6) ? { cols: Math.min(cols, 3), rows: Math.min(rows, 2) }
-                           : { cols, rows };
+  const rows = Math.max(1, Math.min(3, Math.round(h / (w / 2.2))));
+  return { cols: 1, rows };
 }
 
 async function pdfPageToJpeg(doc, pageNo, fileName) {

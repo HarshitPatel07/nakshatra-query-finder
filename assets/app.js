@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages, setTiling } from './scan.js?v=28';
-import { readBatch, collate, checkKey } from './audit.js?v=28';
-import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=28';
-import { loadLearned, forgetLearned } from './corpus.js?v=28';
+import { groupByAgency, countPages, pages, setTiling, setProvider } from './scan.js?v=29';
+import { readBatch, collate, checkKey } from './audit.js?v=29';
+import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=29';
+import { loadLearned, forgetLearned } from './corpus.js?v=29';
 
 const $ = s => document.querySelector(s);
 
@@ -248,7 +248,7 @@ $('#mprep').addEventListener('click', async () => {
   $('#mstat').textContent = 'rendering pages…';
 
   try {
-    const { bundle, promptFor, download } = await import('./manual.js?v=28');
+    const { bundle, promptFor, download } = await import('./manual.js?v=29');
     const { parts, index, pageCount } = await bundle(agency, {
       per,
       onProgress: n => { $('#mstat').textContent = `rendering page ${n}…`; }
@@ -287,7 +287,7 @@ $('#mread').addEventListener('click', async () => {
   if (!text) { $('#mreadstat').textContent = 'paste the reply first'; return; }
 
   try {
-    const { parseReply } = await import('./manual.js?v=28');
+    const { parseReply } = await import('./manual.js?v=29');
     const findings = parseReply(text, manual.index);
     const observations = collate(findings);
 
@@ -329,7 +329,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=28');
+    const { importWorkbook } = await import('./import.js?v=29');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -640,9 +640,8 @@ async function run() {
      only what identification made of it, and identification can still be
      running, or can have failed because the provider was busy — neither means
      the user forgot to paste something. */
-  /* Maximum reads each page as a grid of full-detail tiles rather than one
-     shrunken image — several times the detail per row, at several times the
-     images. The other levels send one image per page as before. */
+  /* Maximum splits a tall page into horizontal bands — more detail per row,
+     with every row kept whole so the name stays beside its data. */
   setTiling($('#effort').value === 'max');
 
   const typed = splitKeys($('#key').value);
@@ -684,6 +683,8 @@ async function run() {
   try {
     for (const agency of sel) {
       if (abort.signal.aborted) break;
+      /* page images are sized to what this provider will actually keep */
+      setProvider(C.provider);
       log(`— ${agency.name} (${agency.pages} pages) via ${PROVIDERS[C.provider].label} ${detected.label} —`);
       prog.agency = agency.name;
       phase(`Opening ${agency.name}`);
@@ -979,7 +980,7 @@ $('#xlsx').addEventListener('click', async () => {
   const was = btn.textContent;
   btn.textContent = 'Writing…';
   try {
-    const { writeWorkbook } = await import('./export.js?v=28');
+    const { writeWorkbook } = await import('./export.js?v=29');
     const name = results.length === 1
       ? `${results[0].agency.replace(/[^\w .-]+/g, '_')} - Query sheet.xlsx`
       : 'Query sheet.xlsx';
