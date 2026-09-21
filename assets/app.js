@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages } from './scan.js?v=22';
-import { readBatch, collate, checkKey } from './audit.js?v=22';
-import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=22';
-import { loadLearned, forgetLearned } from './corpus.js?v=22';
+import { groupByAgency, countPages, pages } from './scan.js?v=23';
+import { readBatch, collate, checkKey } from './audit.js?v=23';
+import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=23';
+import { loadLearned, forgetLearned } from './corpus.js?v=23';
 
 const $ = s => document.querySelector(s);
 
@@ -240,7 +240,7 @@ $('#mprep').addEventListener('click', async () => {
   $('#mstat').textContent = 'rendering pages…';
 
   try {
-    const { bundle, promptFor, download } = await import('./manual.js?v=22');
+    const { bundle, promptFor, download } = await import('./manual.js?v=23');
     const { parts, index, pageCount } = await bundle(agency, {
       per,
       onProgress: n => { $('#mstat').textContent = `rendering page ${n}…`; }
@@ -279,7 +279,7 @@ $('#mread').addEventListener('click', async () => {
   if (!text) { $('#mreadstat').textContent = 'paste the reply first'; return; }
 
   try {
-    const { parseReply } = await import('./manual.js?v=22');
+    const { parseReply } = await import('./manual.js?v=23');
     const findings = parseReply(text, manual.index);
     const observations = collate(findings);
 
@@ -321,7 +321,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=22');
+    const { importWorkbook } = await import('./import.js?v=23');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=

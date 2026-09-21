@@ -266,25 +266,44 @@ export const PROVIDERS = {
     /* Google issues "AIza…" and "AQ.…" — a hint for probe order, never a test. */
     keyPattern: /^(AIza|AQ\.)/,
 
-    prefer: ['gemini-pro-latest', 'gemini-2.5-pro', 'gemini-flash-latest', 'gemini-2.5-flash'],
+    prefer: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite',
+             'gemini-flash-latest', 'gemini-2.5-pro'],
 
     /* Google ships new Gemini versions constantly, so score the id instead of
        maintaining a list that is stale the week after it is written. */
     excludeRe: /(image|tts|transcribe|audio|music|lyria|nano-banana|robotics|computer-use|deep-research|antigravity|embedding|aqa|gemma|learnlm|omni)/i,
-    rank(id) {
-      /* the "-latest" aliases always resolve to Google's current best */
-      if (id === 'gemini-pro-latest') return 1e7;
-      if (id === 'gemini-flash-latest') return 9e6;
+    /* --------------------------------------------------------------------
+       Newest is the wrong thing to want here.
 
+       On Google's free tier the newest model carries the SMALLEST allowance —
+       gemini-3.8-flash caps at 20 requests — and attracts the most traffic, so
+       it is also the first to answer 503. Chasing it produced runs that spent
+       four minutes per batch and read nothing. The previous generation of
+       flash has a far larger free allowance, is barely contended, and reads
+       these pages perfectly well.
+
+       So: mid-generation flash first, newest last. A paid key loses very
+       little by this and a free key becomes usable, which is the whole point.
+       -------------------------------------------------------------------- */
+    rank(id) {
       const m = id.match(/^gemini-(\d+(?:\.\d+)?)-(pro|flash)(-lite)?/);
+      /* aliases track the newest, so they inherit its quota problem */
+      if (id === 'gemini-flash-latest') return 400;
+      if (id === 'gemini-pro-latest') return 380;
       if (!m) return -1;
+
       const version = parseFloat(m[1]);
-      const tier = m[2] === 'pro' ? 300 : (m[3] ? 100 : 200);
-      const stable = /preview|exp|-\d{2}-\d{4}$/.test(id) ? 0 : 10;
-      /* Lite variants read a little less well but are far less contended, so
-         they stay in the fallback chain rather than being ranked out of it —
-         when the headline models are all shedding load, these still answer. */
-      return version * 1000 + tier + stable;
+      const isPro = m[2] === 'pro';
+      const isLite = !!m[3];
+      const stable = /preview|exp|-\d{2}-\d{4}$/.test(id) ? 0 : 40;
+
+      /* Distance from 2.5 — the generation with the roomiest free quota.
+         Anything newer is penalised for being rationed, anything older for
+         being withdrawn. */
+      const settled = 600 - Math.abs(version - 2.5) * 120;
+      const tier = isPro ? 60 : (isLite ? 80 : 120);   // plain flash is the sweet spot
+
+      return settled + tier + stable;
     },
     listUrl: key => `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,
     listHeaders: () => ({}),
