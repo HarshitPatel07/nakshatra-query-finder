@@ -1,0 +1,58 @@
+{
+  "_note": "Shared truth for the house wording. assets/corpus.js holds the browser copy; keep the two the same.",
+
+  "stems": {
+    "Manpower register": "was not properly filled up in the Nakshatra Manual",
+    "Declaration cum undertaking page": "was not properly filled up in the Nakshatra Manual",
+    "Vendor Declaration": "was not properly filled up in the Nakshatra Manual",
+    "No Dues and Data Purging Declaration": "was not filled up properly in Nakshatra Manual",
+    "Repo kit Tracker": "was not filled up properly in Nakshatra Manual",
+    "Audit Score Card": "was not filled up properly in Nakshatra Manual",
+    "Monthly Compliance Declaration": "was not filled up properly in the Nakshatra Manual",
+    "Product Declaration page": "was not filled up properly in the Nakshatra Manual",
+    "Telephone line Declaration": "was not filled up properly in the Nakshatra Manual",
+    "Visiting register page": "was not filled up properly in the Nakshatra Manual",
+    "Agency Training Tracker": "was not filled up properly in the Nakshatra Manual",
+    "Assets Management Declaration": "was wrongly filled up in the Nakshatra Manual",
+    "Agency Key personal Information": "was wrongly filled up in Nakshatra Manual"
+  },
+
+  "wrong_stems": {
+    "Agency Key personal Information": "was wrongly filled up in Nakshatra Manual",
+    "Repo kit Tracker": "was wrongly filled up in Nakshatra Manual"
+  },
+
+  "default_stem": "was not filled up properly in the Nakshatra Manual",
+
+  "categories": {
+    "Manpower register": "Manpower Register Verifications",
+    "Declaration cum undertaking page": "Code Of Conduct",
+    "Vendor Declaration": "Employee Background Verification",
+    "No Dues and Data Purging Declaration": "No Dues Letter Verification",
+    "Repo kit Tracker": "Repo Register Verification",
+    "Audit Score Card": "Process Management",
+    "Monthly Compliance Declaration": "Monthly Compliance Verifications",
+    "Product Declaration page": "Product Declaration Verifications",
+    "Telephone line Declaration": "System Application Verification",
+    "Visiting register page": "Visitor Register Verifications",
+    "Agency Training Tracker": "Process Management",
+    "Assets Management Declaration": "Data Security",
+    "Agency Key personal Information": "Process Management"
+  },
+
+  "who_label": {
+    "Manpower register": "Executive Name",
+    "Repo kit Tracker": "LAN No.",
+    "Assets Management Declaration": "Executive Name"
+  },
+  "_who_label_note": "Anything not listed is named as CM Name.",
+
+  "monthly": [
+    "Product Declaration page",
+    "No Dues and Data Purging Declaration",
+    "Monthly Compliance Declaration"
+  ],
+
+  "name_cap": 8,
+  "_name_cap_note": "Past this many names the sheet says (All <field>) instead of listing them, which is how the firm's own sheets read."
+}
