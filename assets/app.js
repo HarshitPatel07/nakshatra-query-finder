@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages, setTiling, setProvider, turned } from './scan.js?v=36';
-import { readBatch, collate, checkKey } from './audit.js?v=36';
-import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=36';
-import { loadLearned, forgetLearned } from './corpus.js?v=36';
+import { groupByAgency, countPages, pages, setTiling, setProvider, turned } from './scan.js?v=37';
+import { readBatch, collate, checkKey, shallow } from './audit.js?v=37';
+import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=37';
+import { loadLearned, loadFields, forgetLearned } from './corpus.js?v=37';
 
 const $ = s => document.querySelector(s);
 
@@ -248,7 +248,7 @@ $('#mprep').addEventListener('click', async () => {
   $('#mstat').textContent = 'rendering pages…';
 
   try {
-    const { bundle, promptFor, download } = await import('./manual.js?v=36');
+    const { bundle, promptFor, download } = await import('./manual.js?v=37');
     const { parts, index, pageCount } = await bundle(agency, {
       per,
       onProgress: n => { $('#mstat').textContent = `rendering page ${n}…`; }
@@ -287,7 +287,7 @@ $('#mread').addEventListener('click', async () => {
   if (!text) { $('#mreadstat').textContent = 'paste the reply first'; return; }
 
   try {
-    const { parseReply } = await import('./manual.js?v=36');
+    const { parseReply } = await import('./manual.js?v=37');
     const findings = parseReply(text, manual.index);
     const observations = collate(findings);
 
@@ -315,8 +315,18 @@ $('#mread').addEventListener('click', async () => {
 /* ---------- learning from finished sheets -------------------------------- */
 function learnStatus() {
   const n = loadLearned().length;
+  /* The field count is the number worth showing. Examples teach the wording,
+     which was never what went wrong; the fields are what the next run is made
+     to check one by one, so they are what actually moves the query count. */
+  const fields = loadFields();
+  const docs = Object.keys(fields).length;
+  const checks = Object.values(fields)
+    .reduce((t, d) => t + Object.keys(d.fields || {}).length, 0);
+
   $('#learnstat').innerHTML = n
-    ? `<b style="color:var(--green)">${n}</b> imported example${n === 1 ? '' : 's'} in use`
+    ? `<b style="color:var(--green)">${n}</b> imported example${n === 1 ? '' : 's'} in use` +
+      (checks ? ` &middot; checking <b>${checks}</b> field${checks === 1 ? '' : 's'} ` +
+                `learned from your sheets across ${docs} document${docs === 1 ? '' : 's'}` : '')
     : 'none imported yet — using the built-in examples';
   $('#learnclear').classList.toggle('hide', !n);
 }
@@ -329,7 +339,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=36');
+    const { importWorkbook } = await import('./import.js?v=37');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -752,6 +762,38 @@ async function run() {
             } catch { /* the first reading stands */ }
           }
 
+          /* A page whose document was recognised but whose field list came back
+             half answered was skimmed rather than read — the commonest way a
+             query goes missing. Those few pages go round again on their own,
+             where the model has nothing else competing for its attention. */
+          const thin = got.filter(shallow)
+                          .map(g => chunk.find(c => c.label === g.label))
+                          .filter(Boolean);
+          if (thin.length) {
+            log(`  ${thin.length} page(s) answered only part of their field list — reading again`, 'warn');
+            try {
+              const again = await readBatch({ ...C }, thin, abort.signal);
+              let gained = 0;
+              for (const second of again) {
+                const first = findings.find(f => f.label === second.label);
+                if (!first) continue;
+                /* Keep whichever reading worked the page harder. The second is
+                   not automatically better — it is better when it answered for
+                   more of the document and found at least as much. */
+                const deeper = (second.checked?.length || 0) > (first.checked?.length || 0);
+                const richer = second.issues.length > first.issues.length;
+                if (deeper || richer) {
+                  gained += Math.max(0, second.issues.length - first.issues.length);
+                  Object.assign(first, second);
+                }
+              }
+              if (gained) {
+                prog.issues += gained;
+                log(`  found ${gained} more issue${gained === 1 ? '' : 's'} on the second reading`, 'ok');
+              }
+            } catch { /* the first reading stands */ }
+          }
+
           /* Deliberately NOT rotating here. The best model the key can reach
              reads every page it is able to; moving off it for quota's sake is
              what made the folder inconsistent. */
@@ -1007,7 +1049,7 @@ $('#xlsx').addEventListener('click', async () => {
   const was = btn.textContent;
   btn.textContent = 'Writing…';
   try {
-    const { writeWorkbook } = await import('./export.js?v=36');
+    const { writeWorkbook } = await import('./export.js?v=37');
     const name = results.length === 1
       ? `${results[0].agency.replace(/[^\w .-]+/g, '_')} - Query sheet.xlsx`
       : 'Query sheet.xlsx';

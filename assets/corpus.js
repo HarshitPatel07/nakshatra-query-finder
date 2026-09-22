@@ -167,6 +167,116 @@ export function learn(newRows) {
 
 export function forgetLearned() {
   try { localStorage.removeItem(LEARNED_KEY); } catch {}
+  try { localStorage.removeItem(FIELDS_KEY); } catch {}
+}
+
+/* --------------------------------------------------------------------------
+   What to LOOK FOR, learned from the same sheets.
+   --------------------------------------------------------------------------
+   The examples above teach wording, and wording was never the problem: the
+   sheets came back phrased correctly and half empty. What a corrected sheet
+   also contains, and what was being thrown away, is the firm's own answer to
+   "which fields on this document actually get queried" — the Focus sheet says
+   the Manpower register is queried for Executive Signature, CM Sign and Date
+   of Resignation, because a real auditor raised all three.
+
+   That is a checklist written by the people who do this work, and every sheet
+   imported makes it longer. It also discovers documents nobody hard-coded:
+   a query about a page not in DOCUMENTS adds the page.
+   -------------------------------------------------------------------------- */
+const FIELDS_KEY = 'nq.fields';
+
+export function loadFields() {
+  try { return JSON.parse(localStorage.getItem(FIELDS_KEY) || '{}'); } catch { return {}; }
+}
+
+/* "Manpower register was not properly filled up … (i.e. CM Sign, Author Sign)"
+   -> document "Manpower register", fields ["CM Sign", "Author Sign"] */
+function partsOf(obs) {
+  const s = String(obs || '').trim();
+
+  /* the document is whatever stands before the verb that starts every stem */
+  const m = /^(.*?)\s+(?:was|were|is|are|has|have|not)\b/i.exec(s);
+  const doc = m ? m[1].trim().replace(/\s+/g, ' ') : '';
+  if (!doc || doc.length < 4 || doc.length > 70) return null;
+
+  const f = /\(\s*i\.?e\.?\s*:?\s*([^)]*)\)/i.exec(s);
+  const fields = f
+    ? f[1].split(/\s*(?:,|&|\band\b)\s*/).map(x => x.trim()).filter(x => x.length > 1 && x.length < 60)
+    : [];
+
+  return { doc, fields };
+}
+
+/* Sheets are typed by hand across years and offices, so the same field arrives
+   as "CM Detail", "CM Details", "Cm Details". Asking about all three wastes the
+   model's attention on one field three times, which is the opposite of what
+   the checklist is for. Case, spacing, punctuation and a trailing plural are
+   all ignored when deciding whether a field is already on the list. */
+function fieldKey(f) {
+  return String(f).toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .map(w => (w.length > 3 && w.endsWith('s') ? w.slice(0, -1) : w))
+    .join(' ');
+}
+
+export function learnFields(rows) {
+  const held = loadFields();
+  let addedDocs = 0, addedFields = 0;
+
+  for (const r of rows) {
+    const p = partsOf(r.obs);
+    if (!p || !p.fields.length) continue;
+    const key = p.doc.toLowerCase();
+    if (!held[key]) { held[key] = { name: p.doc, cat: canonCat(r.cat), fields: {} }; addedDocs++; }
+    for (const f of p.fields) {
+      /* count against the normalised form, but keep the spelling the firm
+         actually used, so the checklist reads the way the sheets read */
+      const fk = fieldKey(f);
+      if (!fk) continue;
+      const already = Object.keys(held[key].fields).find(x => fieldKey(x) === fk);
+      if (already) { held[key].fields[already]++; continue; }
+      held[key].fields[f] = 1;
+      addedFields++;
+    }
+  }
+
+  try { localStorage.setItem(FIELDS_KEY, JSON.stringify(held)); } catch {}
+  return { addedDocs, addedFields };
+}
+
+/* The shipped documents, each with the learned fields folded in, plus any
+   document the firm queries that was never hard-coded. Ordered so the fields
+   raised most often on real audits are asked about first. */
+export function documentsToCheck() {
+  const learned = loadFields();
+  const out = DOCUMENTS.map(d => ({ ...d, fields: d.fields.slice() }));
+  const byKey = new Map(out.map(d => [d.name.toLowerCase(), d]));
+
+  for (const [key, rec] of Object.entries(learned)) {
+    const counts = rec.fields || {};
+    const ranked = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+
+    let doc = byKey.get(key);
+    if (!doc) {
+      /* a page the firm queries that nobody listed — worth asking about */
+      doc = { name: rec.name, cat: canonCat(rec.cat) || 'Process Management',
+              fields: [], who: null, learnt: true };
+      out.push(doc);
+      byKey.set(key, doc);
+    }
+    const have = new Set(doc.fields.map(fieldKey));
+    for (const f of ranked) {
+      const fk = fieldKey(f);
+      if (have.has(fk)) continue;
+      have.add(fk);
+      doc.fields.push(f);
+    }
+  }
+  return out;
 }
 
 function norm(s) { return String(s).toLowerCase().replace(/\s+/g, ' ').trim(); }

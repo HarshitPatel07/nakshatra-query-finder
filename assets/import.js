@@ -7,7 +7,7 @@
    being kept as an example.
    ========================================================================== */
 
-import { learn, canonCat } from './corpus.js?v=36';
+import { learn, learnFields, canonCat } from './corpus.js?v=37';
 
 /* SheetJS ships only a UMD build on the allowed CDN, so it is pulled in as a
    classic script the first time an import is attempted rather than at load. */
@@ -80,5 +80,9 @@ export async function importWorkbook(file) {
   }
 
   const { added, total } = learn(rows);
-  return { sheets: perSheet, found: rows.length, added, total };
+  /* The wording is only half of what a corrected sheet carries. The other half
+     is which fields on which document a real auditor actually raised, and that
+     is what the next run is made to check one by one. */
+  const { addedDocs, addedFields } = learnFields(rows);
+  return { sheets: perSheet, found: rows.length, added, total, addedDocs, addedFields };
 }

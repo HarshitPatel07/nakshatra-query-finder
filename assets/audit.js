@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=36';
-import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
-         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=36';
+import { PROVIDERS } from './providers.js?v=37';
+import { CATEGORIES, DOCUMENTS, documentsToCheck, STANDING_CHECKS, MONTH_STYLE,
+         pickExamples, canonCat, STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=37';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
@@ -14,9 +14,9 @@ import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, cano
 export function buildPrompt() { return buildReadSystem(); }
 
 function buildReadSystem() {
-  const docs = DOCUMENTS.map(d =>
+  const docs = documentsToCheck().map(d =>
     `- ${d.name}  [category: ${d.cat}]\n` +
-    `    fields that are commonly blank: ${d.fields.join(', ')}\n` +
+    `    CHECK EVERY ONE OF THESE, one at a time: ${d.fields.join(' | ')}\n` +
     (d.who ? `    name the person as: (${d.who} -:<name>)\n` : '') +
     (d.monthly ? `    this page repeats per month — say which month is at fault\n` : '')
   ).join('');
@@ -49,6 +49,26 @@ ${examples}
 
 Month style: ${MONTH_STYLE}
 
+HOW TO READ A PAGE — this is the part that is most often done badly
+Do NOT skim the page and report what stands out. That produces one finding on a page
+that has four, which is the single biggest cause of an incomplete query sheet.
+
+Work it like the auditor does:
+  1. Identify which document the page is, from the list above.
+  2. Take that document's field list — every entry, in order.
+  3. For EACH field in turn, look down the WHOLE column, every row, and decide:
+       filled everywhere  ->  "ok"
+       blank in some rows ->  "blank", and say whose rows
+       filled but wrong   ->  "wrong"
+       not on this page   ->  "absent"
+  4. Report a verdict for EVERY field in that list in "checked", including the ones
+     that are fine. A field you did not look at is not permitted — if you genuinely
+     cannot see it, say "absent". This list is how the reading is audited afterwards.
+  5. THEN write the issues, one per field that came back blank or wrong.
+
+A page where you report one issue but only three verdicts on a twelve-field document
+has not been read. Go back and do the remaining nine.
+
 HARD RULES
 - These are photographs of a book, so a page may still arrive sideways or upside down.
   Work out which way up it is BEFORE reading it, and be especially careful to follow each
@@ -77,7 +97,8 @@ Reply with ONLY a JSON object, no prose and no code fence:
   "doc":"<which document this page is>",
   "month":"<e.g. Jun'26, or empty if not legible>",
   "visits":"<ONLY on a Bank Manager Agency Visit Register page — otherwise omit. An array of every entry you can read on it: [{\"cm\":\"<the employee name in that row>\",\"month\":\"<the month of the visit date, e.g. Apr'26>\"}]. List every row, not just defective ones — these are compared across the whole folder afterwards to find who never visited>",
-  "roster":"<ONLY on a page that lists the agency's Collection Managers (the sign-off page or the declaration cum undertaking) — otherwise omit. An array of their names as written>",
+  "checked":"<REQUIRED whenever you recognised the document. One entry for EVERY field in that document's list above, in order: [{\"field\":\"<the field>\",\"verdict\":\"ok|blank|wrong|absent\"}]. Do not shorten this list. It is checked against the document's field list, and a short list means the page is read again>",
+  "roster":"<REQUIRED on ANY page that names the agency's Collection Managers — the sign-off page, the declaration cum undertaking, the manpower register's CM column, or a monthly declaration's CM details. An array of their names exactly as written. Give this even when the page has nothing wrong with it and even when you have already given it for another page: without it the whole-folder check for who never visited cannot run at all, and two real queries go unraised>",
   "signoff":"<ONLY on the Agency Visit Sign Off page — otherwise omit. An object with: date, agency, address, signedBy, designation, stamp, auditor, auditorNo, cmNames, cmIds, barcode. Copy each exactly as written; leave any you cannot read as an empty string>",
   "issues":[{"document":"<the DOCUMENT — the name of the printed page itself, e.g. 'Manpower register' or 'No Dues and Data Purging Declaration'. NEVER a category name: 'Code Of Conduct' and 'Data Security' are categories, not documents>",
              "field":"<the exact field that is blank or wrong>",
@@ -365,6 +386,35 @@ function cleanWho(issue) {
   return { ...issue, who, whoLabel: label };
 }
 
+/* --------------------------------------------------------------------------
+   Was this page actually read, or skimmed?
+   --------------------------------------------------------------------------
+   Half of every query missed on the two folders measured had the same shape:
+   the page was read successfully, one defect was reported, and the other two
+   or three on the same page were not. Asking an open question about a page
+   gets a sample of what is wrong, not an inventory — the model stops as soon
+   as it has a plausible answer.
+
+   The verdict list is the defence. A document with twelve fields that comes
+   back with three verdicts was skimmed, and saying so is only possible because
+   the field list is known in advance. Such a page is worth reading again;
+   re-reading every page would double the cost of the folder for nothing.
+   -------------------------------------------------------------------------- */
+export function shallow(page) {
+  if (!page || page.error) return false;
+  const doc = documentsToCheck()
+    .find(d => d.name.toLowerCase() === String(page.doc || '').toLowerCase().trim());
+  if (!doc || doc.fields.length < 3) return false;      // nothing to measure against
+
+  const seen = new Set((page.checked || [])
+    .map(c => String(c?.field || '').toLowerCase().trim()).filter(Boolean));
+
+  /* two thirds is the line: a model that answers for most of the list has
+     worked the page, and demanding every last one would re-read pages that
+     were read properly. */
+  return seen.size < Math.ceil(doc.fields.length * 2 / 3);
+}
+
 /* Two issues are the same query when document, field, person and month match. */
 export function issueKey(i) {
   return [i.document, i.field, i.who, i.month]
@@ -440,6 +490,9 @@ export async function readBatch(cfg, batch, signal) {
     signoff: (p.signoff && typeof p.signoff === 'object') ? p.signoff : null,
     visits: Array.isArray(p.visits) ? p.visits : [],
     roster: Array.isArray(p.roster) ? p.roster : [],
+    /* the per-field verdicts, kept so a page read too shallowly can be caught
+       rather than quietly accepted as clean */
+    checked: Array.isArray(p.checked) ? p.checked : [],
     issues: (Array.isArray(p.issues) ? p.issues : []).map(i => {
       /* corrected here, not just at phrasing time, so collation groups on the
          real document rather than on whatever the model called it */
