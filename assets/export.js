@@ -8,10 +8,11 @@
      row 15     blank
      row 16     Audit Observation              (merged across A:B)
      row 17     Main Category | Observation
-     row 18+    one row per query, with the status column left blank
+     row 18+    one row per query, status in column C
 
-   The status column is deliberately empty: it records what the agency said
-   when the sheet came back, which is not something this tool can know.
+   Column C is the firm's "Sign off Revert" column — what the agency said when
+   the sheet came back, which this tool cannot know. It is left empty except
+   where a query needs checking before it goes out, and then it says why.
    ========================================================================== */
 
 const XLSX_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
@@ -78,8 +79,11 @@ function sheetFor(XLSX, result) {
     if (!byCat.has(c)) byCat.set(c, []);
     byCat.get(c).push(o);
   }
+  /* The status column carries the review note when there is one. It was being
+     computed and then thrown away here, so a month read as Aug'26 on a folder
+     audited Apr-Jun reached the bank with nothing to say it was doubtful. */
   for (const [cat, list] of byCat) {
-    for (const o of list) rows.push([cat, o.text, '']);
+    for (const o of list) rows.push([cat, o.text, o.review || '']);
   }
   if (!result.observations?.length) rows.push(['', 'Nil', '']);
 

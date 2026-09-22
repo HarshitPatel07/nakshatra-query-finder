@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages, setTiling, setProvider, turned } from './scan.js?v=35';
-import { readBatch, collate, checkKey } from './audit.js?v=35';
-import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=35';
-import { loadLearned, forgetLearned } from './corpus.js?v=35';
+import { groupByAgency, countPages, pages, setTiling, setProvider, turned } from './scan.js?v=36';
+import { readBatch, collate, checkKey } from './audit.js?v=36';
+import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=36';
+import { loadLearned, forgetLearned } from './corpus.js?v=36';
 
 const $ = s => document.querySelector(s);
 
@@ -248,7 +248,7 @@ $('#mprep').addEventListener('click', async () => {
   $('#mstat').textContent = 'rendering pages…';
 
   try {
-    const { bundle, promptFor, download } = await import('./manual.js?v=35');
+    const { bundle, promptFor, download } = await import('./manual.js?v=36');
     const { parts, index, pageCount } = await bundle(agency, {
       per,
       onProgress: n => { $('#mstat').textContent = `rendering page ${n}…`; }
@@ -287,7 +287,7 @@ $('#mread').addEventListener('click', async () => {
   if (!text) { $('#mreadstat').textContent = 'paste the reply first'; return; }
 
   try {
-    const { parseReply } = await import('./manual.js?v=35');
+    const { parseReply } = await import('./manual.js?v=36');
     const findings = parseReply(text, manual.index);
     const observations = collate(findings);
 
@@ -329,7 +329,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=35');
+    const { importWorkbook } = await import('./import.js?v=36');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -360,14 +360,20 @@ $('#learnclear').addEventListener('click', () => {
 const deadModels = new Set();   // spent or refusing, for this session
 
 /* --------------------------------------------------------------------------
-   Spread the work across every model the key can reach, rather than draining
-   one and then moving on.
+   Rotation spreads the work across every model a key can reach, because free
+   quotas are counted per model: ten usable models at twenty requests each is
+   two hundred requests, not twenty.
 
-   Free quotas are counted per model, so ten usable models at twenty requests
-   each is two hundred requests, not twenty. Rotating also keeps any single
-   model from being hammered hard enough to start shedding, which is what
-   produced the 503 storms. Models are taken in ranked order, so the better
-   ones still carry proportionally more of the folder.
+   It used to run after every batch, which was a mistake that cost real
+   accuracy. Spreading the folder means most pages are read by the second,
+   third or eighth-best model rather than the best one, and on a handwritten
+   register that difference decides whether a column of blanks is seen at all.
+   Quota is only worth buying with accuracy when there is no quota left — and
+   with several keys in the pool there usually is, on a fresh key.
+
+   So the order of preference is now: keep the best model; if it walls, take a
+   fresh key and keep the best model; only when every key is spent does the
+   work move down to a weaker model.
    -------------------------------------------------------------------------- */
 let rotateAt = 0;
 
@@ -746,8 +752,9 @@ async function run() {
             } catch { /* the first reading stands */ }
           }
 
-          /* move to the next model so no single quota carries the folder */
-          rotateModel();
+          /* Deliberately NOT rotating here. The best model the key can reach
+             reads every page it is able to; moving off it for quota's sake is
+             what made the folder inconsistent. */
         } catch (e) {
           if (e.name === 'AbortError' || e.fatal) throw e;
           /* Too many findings to fit in one reply — halve the batch and let
@@ -1000,7 +1007,7 @@ $('#xlsx').addEventListener('click', async () => {
   const was = btn.textContent;
   btn.textContent = 'Writing…';
   try {
-    const { writeWorkbook } = await import('./export.js?v=35');
+    const { writeWorkbook } = await import('./export.js?v=36');
     const name = results.length === 1
       ? `${results[0].agency.replace(/[^\w .-]+/g, '_')} - Query sheet.xlsx`
       : 'Query sheet.xlsx';

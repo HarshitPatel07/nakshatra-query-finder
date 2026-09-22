@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=35';
+import { PROVIDERS } from './providers.js?v=36';
 import { CATEGORIES, DOCUMENTS, STANDING_CHECKS, MONTH_STYLE, pickExamples, canonCat,
-         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=35';
+         STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=36';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
@@ -54,6 +54,10 @@ HARD RULES
   Work out which way up it is BEFORE reading it, and be especially careful to follow each
   row across to the right person — a blank cell attributed to the wrong name is the single
   most damaging mistake you can make here.
+- Copy a name EXACTLY as it is written on the page, in the same word order. These
+  registers are written surname-first — "Gupta Ravishankar", "Patel Akash Mukeshbhai" —
+  and the sheet has to match the register so the agency can find the row. Do not turn it
+  round into "Ravishankar Gupta", do not drop a middle name, do not tidy the spelling.
 - NEVER state a month, a name, an ID or a date you cannot actually read on the page.
   If the month is not legible, set "month" to "" — do not guess. A wrong month is worse
   than no month, because it is sent to the bank.
@@ -333,6 +337,32 @@ export function phrase(issue) {
   if (issue.field) s += ` (i.e. ${issue.field})`;
   if (issue.who) s += `(${issue.whoLabel || 'CM Name'} -:${issue.who})`;
   return s;
+}
+
+/* --------------------------------------------------------------------------
+   The model is asked for the bare name in "who" and the label separately, but
+   it often answers with the finished house wrapper already around it. Wrapping
+   that a second time produced, on a real sheet sent to the bank:
+     (Executive Name -:(Executive Name -:Hirenkumar Nampatbhai Patamdiya), …)
+   So any wrapper is taken off at intake, and the label inside it is kept —
+   the model knew it was an Executive rather than a CM, and that is worth
+   keeping rather than defaulting back to "CM Name".
+   -------------------------------------------------------------------------- */
+function cleanWho(issue) {
+  let who = String(issue.who || '').trim();
+  if (!who) return issue;
+
+  let label = issue.whoLabel || '';
+  for (let i = 0; i < 3; i++) {                     // nested more than once
+    const m = /^\(?\s*(?:i\.e\.?\s*)?(CM Name|Executive Name|LAN No\.?|Name)\s*[-:]+\s*(.*?)\s*\)?$/i.exec(who);
+    if (!m) break;
+    if (!label) label = m[1].replace(/\bname\b/i, 'Name');
+    who = m[2].trim();
+  }
+  /* a trailing unmatched bracket is left over once the wrapper comes off */
+  who = who.replace(/^[(\s]+|[)\s]+$/g, '').trim();
+
+  return { ...issue, who, whoLabel: label };
 }
 
 /* Two issues are the same query when document, field, person and month match. */
@@ -719,7 +749,7 @@ export function visitGaps(findings) {
 export function collate(findings) {
   let flat = [];
   findings.forEach(f => (f.issues || []).forEach(i =>
-    flat.push({ ...i, source: f.label })));
+    flat.push(cleanWho({ ...i, source: f.label }))));
 
   flat = mergeFields(flat);
 
