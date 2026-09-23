@@ -4,10 +4,10 @@
 
 /* ?v= is bumped whenever these change — GitHub Pages caches assets hard, and
    without it a returning visitor keeps running the old build. */
-import { groupByAgency, countPages, pages, setTiling, setProvider, turned } from './scan.js?v=37';
-import { readBatch, collate, checkKey, shallow } from './audit.js?v=37';
-import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=37';
-import { loadLearned, loadFields, forgetLearned } from './corpus.js?v=37';
+import { groupByAgency, countPages, pages, setTiling, setProvider, turned } from './scan.js?v=38';
+import { readBatch, collate, checkKey, shallow, correction } from './audit.js?v=38';
+import { PROVIDERS, detectProvider, resolveModel } from './providers.js?v=38';
+import { loadLearned, loadFields, forgetLearned } from './corpus.js?v=38';
 
 const $ = s => document.querySelector(s);
 
@@ -248,7 +248,7 @@ $('#mprep').addEventListener('click', async () => {
   $('#mstat').textContent = 'rendering pages…';
 
   try {
-    const { bundle, promptFor, download } = await import('./manual.js?v=37');
+    const { bundle, promptFor, download } = await import('./manual.js?v=38');
     const { parts, index, pageCount } = await bundle(agency, {
       per,
       onProgress: n => { $('#mstat').textContent = `rendering page ${n}…`; }
@@ -287,7 +287,7 @@ $('#mread').addEventListener('click', async () => {
   if (!text) { $('#mreadstat').textContent = 'paste the reply first'; return; }
 
   try {
-    const { parseReply } = await import('./manual.js?v=37');
+    const { parseReply } = await import('./manual.js?v=38');
     const findings = parseReply(text, manual.index);
     const observations = collate(findings);
 
@@ -339,7 +339,7 @@ $('#learnfile').addEventListener('change', async e => {
   if (!file) return;
   $('#learnstat').textContent = 'reading…';
   try {
-    const { importWorkbook } = await import('./import.js?v=37');
+    const { importWorkbook } = await import('./import.js?v=38');
     const r = await importWorkbook(file);
     learnStatus();
     $('#learnstat').innerHTML +=
@@ -742,10 +742,40 @@ async function run() {
           log(`  ${detected.label}: read ${chunk.length} pages — ${n} issue${n === 1 ? '' : 's'}` +
               (docs.length ? ` · saw: ${docs.join(', ')}` : ' · did not identify any document'),
               n ? 'warn' : (docs.length ? 'ok' : 'err'));
-          /* A page the model could not identify is very often one photographed
-             the other way round, so the upright guess left it upside down.
-             Send those few again turned half a turn and keep whichever reading
-             actually recognised the document. */
+          /* Pages the reader says it had to read sideways go back turned the
+             right way up, and the second reading replaces the first outright.
+             A page read on its side can still say a cell is empty, so it looks
+             like a successful read — what it loses is which ROW the empty cell
+             belongs to, which is the whole value of the query. Shape alone
+             never caught these: the MS Chandan photographs are landscape by a
+             whisker, so not one was turned while half the folder lay sideways,
+             and that agency produced none of its fourteen queries that name a
+             person. */
+          const askew = got.map(g => ({ g, deg: correction(g) }))
+                           .filter(x => x.deg)
+                           .map(x => ({ ...x, page: chunk.find(c => c.label === x.g.label) }))
+                           .filter(x => x.page && !x.page.turnedFrom);
+          if (askew.length) {
+            log(`  ${askew.length} page(s) were read sideways — turning and reading again`, 'warn');
+            try {
+              const straight = await Promise.all(askew.map(x => turned(x.page, x.deg)));
+              const second = await readBatch({ ...C }, straight, abort.signal);
+              let fixed = 0;
+              for (const s of second) {
+                const label = s.label.replace(/ \[turned.*$/, '');
+                const first = findings.find(f => f.label === label);
+                if (!first || (!s.doc && !s.issues.length)) continue;
+                prog.issues += Math.max(0, s.issues.length - first.issues.length);
+                Object.assign(first, s, { label });
+                fixed++;
+              }
+              if (fixed) log(`  re-read ${fixed} page(s) the right way up`, 'ok');
+            } catch { /* the first reading stands */ }
+          }
+
+          /* A page the model could not identify at all is very often one that
+             came out upside down, where there is nothing to report and so
+             nothing to say it was askew. Half a turn is the only guess left. */
           const lost = got.filter(g => !g.doc && !g.issues.length)
                           .map(g => chunk.find(c => c.label === g.label))
                           .filter(c => c && !c.turnedFrom);
@@ -1049,7 +1079,7 @@ $('#xlsx').addEventListener('click', async () => {
   const was = btn.textContent;
   btn.textContent = 'Writing…';
   try {
-    const { writeWorkbook } = await import('./export.js?v=37');
+    const { writeWorkbook } = await import('./export.js?v=38');
     const name = results.length === 1
       ? `${results[0].agency.replace(/[^\w .-]+/g, '_')} - Query sheet.xlsx`
       : 'Query sheet.xlsx';

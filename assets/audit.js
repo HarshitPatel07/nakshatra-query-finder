@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=37';
+import { PROVIDERS } from './providers.js?v=38';
 import { CATEGORIES, DOCUMENTS, documentsToCheck, STANDING_CHECKS, MONTH_STYLE,
-         pickExamples, canonCat, STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=37';
+         pickExamples, canonCat, STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=38';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
@@ -95,6 +95,7 @@ HARD RULES
 Reply with ONLY a JSON object, no prose and no code fence:
 {"pages":[{"page":<1-based number within THIS batch>,
   "doc":"<which document this page is>",
+  "orientation":"<REQUIRED. How this page is actually presented to you: \"upright\" if you can read it normally, or \"left\" / \"right\" / \"upside-down\" if you had to read it turned. Judge it from the printed headings, not the handwriting. Say this even when you managed to read the page anyway — a page read sideways loses which row a blank cell belongs to, and pages you call sideways are turned and shown to you again>",
   "month":"<e.g. Jun'26, or empty if not legible>",
   "visits":"<ONLY on a Bank Manager Agency Visit Register page — otherwise omit. An array of every entry you can read on it: [{\"cm\":\"<the employee name in that row>\",\"month\":\"<the month of the visit date, e.g. Apr'26>\"}]. List every row, not just defective ones — these are compared across the whole folder afterwards to find who never visited>",
   "checked":"<REQUIRED whenever you recognised the document. One entry for EVERY field in that document's list above, in order: [{\"field\":\"<the field>\",\"verdict\":\"ok|blank|wrong|absent\"}]. Do not shorten this list. It is checked against the document's field list, and a short list means the page is read again>",
@@ -400,6 +401,27 @@ function cleanWho(issue) {
    the field list is known in advance. Such a page is worth reading again;
    re-reading every page would double the cost of the folder for nothing.
    -------------------------------------------------------------------------- */
+/* --------------------------------------------------------------------------
+   How far a page needs turning, from what the reader said it saw.
+
+   Shape was the old test and it is wrong far more often than it looks: the MS
+   Chandan photographs are 1808x1769, landscape by a whisker, so nothing was
+   ever turned while about half the folder sat sideways. The reader knows,
+   because it just read the printed headings — it only had to be asked.
+
+   Returns degrees clockwise to apply, or 0 to leave the page alone.
+   -------------------------------------------------------------------------- */
+export function correction(page) {
+  switch (String(page?.orientation || '').toLowerCase().trim()) {
+    /* "left" means the page lies with its top to the left, so it comes back
+       upright by turning it clockwise. */
+    case 'left':  case 'rotated left':  case 'ccw':  return 90;
+    case 'right': case 'rotated right': case 'cw':   return 270;
+    case 'upside-down': case 'upside down': case '180': return 180;
+    default: return 0;
+  }
+}
+
 export function shallow(page) {
   if (!page || page.error) return false;
   const doc = documentsToCheck()
@@ -486,6 +508,7 @@ export async function readBatch(cfg, batch, signal) {
     label: batch[(p.page || 1) - 1]?.label || batch[0]?.label || '?',
     doc: p.doc || '',
     month: p.month || '',
+    orientation: String(p.orientation || '').toLowerCase().trim(),
     /* the sign-off page carries everything rows 1-14 of the sheet need */
     signoff: (p.signoff && typeof p.signoff === 'object') ? p.signoff : null,
     visits: Array.isArray(p.visits) ? p.visits : [],

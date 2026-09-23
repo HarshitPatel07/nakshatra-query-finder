@@ -88,11 +88,18 @@ async function openPdf(file) {
    holding a whole 50 MB PDF's worth of bitmaps in memory.
    -------------------------------------------------------------------------- */
 export async function* pages(agency, { signal } = {}) {
+  /* An agency folder routinely holds the same evidence twice — MS Chandan has
+     45 photographs and a 45-page PDF of those same photographs, so a folder of
+     45 pages of evidence was costing 90 pages of quota and producing every
+     query twice. Photographs are taken first, because a PDF page is a copy of
+     one. */
+  const seen = [];
+
   for (const file of agency.files) {
     if (signal?.aborted) return;
 
     if (IMG_RE.test(file.name)) {
-      for (const part of await imageToJpeg(file)) yield part;
+      for (const part of await imageToJpeg(file, seen)) yield part;
       continue;
     }
 
@@ -107,13 +114,87 @@ export async function* pages(agency, { signal } = {}) {
     for (let i = 1; i <= doc.numPages; i++) {
       if (signal?.aborted) { doc.destroy(); return; }
       try {
-        for (const part of await pdfPageToJpeg(doc, i, file.name)) yield part;
+        for (const part of await pdfPageToJpeg(doc, i, file.name, seen)) yield part;
       } catch (e) {
         yield { label: `${file.name} p${i}`, error: e.message };
       }
     }
     doc.destroy();
   }
+}
+
+/* --------------------------------------------------------------------------
+   Is this page one already sent?
+
+   The PDF copy of a photograph is resampled and recompressed, so not a byte of
+   it matches while the page is plainly the same. A small normalised greyscale
+   reduction catches that, and comparing all four rotations catches a copy that
+   was also turned on the way into the PDF.
+
+   The threshold is set from measurement rather than taste. On this evidence two
+   photographs of two DIFFERENT register pages sit 0.49 to 0.68 apart — the
+   printed form is identical and only the handwriting differs — while the same
+   photograph reached through a PDF sits near zero. 0.15 has a wide margin on
+   both sides. An earlier attempt at 0.28 on a coarser reduction threw away
+   fourteen real pages, which is the worse failure by far: a page not read is a
+   query not raised.
+   -------------------------------------------------------------------------- */
+const FP = 48;
+const FP_TOL = 0.15;
+
+function fingerprint(source) {
+  const cv = document.createElement('canvas');
+  cv.width = FP; cv.height = FP;
+  const ctx = cv.getContext('2d', { alpha: false });
+  ctx.drawImage(source, 0, 0, FP, FP);
+
+  const px = ctx.getImageData(0, 0, FP, FP).data;
+  const grey = new Float32Array(FP * FP);
+  for (let i = 0; i < grey.length; i++) {
+    grey[i] = (px[i * 4] * 0.299 + px[i * 4 + 1] * 0.587 + px[i * 4 + 2] * 0.114);
+  }
+  let mean = 0;
+  for (const v of grey) mean += v;
+  mean /= grey.length;
+  let sd = 0;
+  for (const v of grey) sd += (v - mean) ** 2;
+  sd = Math.sqrt(sd / grey.length) || 1;
+  for (let i = 0; i < grey.length; i++) grey[i] = (grey[i] - mean) / sd;
+
+  return grey;
+}
+
+/* the same square read out at each quarter turn */
+function rotations(a) {
+  const out = [a];
+  for (let k = 1; k < 4; k++) {
+    const prev = out[k - 1];
+    const next = new Float32Array(FP * FP);
+    for (let y = 0; y < FP; y++) {
+      for (let x = 0; x < FP; x++) next[x * FP + (FP - 1 - y)] = prev[y * FP + x];
+    }
+    out.push(next);
+  }
+  return out;
+}
+
+/* Called on the WHOLE page, before it is cut into bands. Comparing bands
+   instead looks like it would work and does not: a PDF copy at a different
+   pixel size bands at different boundaries, so no band lines up with the band
+   it is a copy of, and every duplicate gets through. */
+function duplicate(source, seen) {
+  let fp;
+  try { fp = fingerprint(source); } catch { return false; }
+
+  for (const held of seen) {
+    for (const turn of held) {
+      let diff = 0;
+      for (let i = 0; i < fp.length; i++) diff += Math.abs(fp[i] - turn[i]);
+      if (diff / fp.length < FP_TOL) return true;
+    }
+  }
+  seen.push(rotations(fp));
+  return false;
 }
 
 /* --------------------------------------------------------------------------
@@ -181,6 +262,24 @@ function gridFor(w, h) {
    These photographs turn the same way, so a portrait page is rotated a quarter
    turn anticlockwise. There is no EXIF orientation to read — it was checked,
    and none of the pages carry one.
+
+   THIS ONLY CATCHES HALF THE PROBLEM, and the half it misses is the expensive
+   one. It tests the shape of the PHOTOGRAPH, and a sideways page is very often
+   inside a photograph that is still landscape: the MS Chandan pages are
+   1808x1769, so height is less than width, so not one of them was ever turned —
+   and roughly half of that folder is sideways. That agency produced 0 of its 14
+   queries that name a person.
+
+   Shape cannot settle it and neither can pixel statistics: comparing how
+   abruptly ink changes along each axis was measured against twelve pages of
+   known orientation and scored an upright page 2.76 against a sideways one at
+   1.07, the wrong way round, because the book is photographed at an angle under
+   hard light and the shadow gradient swamps the text.
+
+   What does know is the model that is about to read the page. So this stays as
+   a first guess for the obvious portrait case, and the reader is asked to
+   report the orientation it actually sees; pages it calls sideways are turned
+   and read again. See `turned()` and the re-read in app.js.
    -------------------------------------------------------------------------- */
 function uprightIfSideways(src) {
   if (src.height <= src.width) return src;
@@ -195,7 +294,7 @@ function uprightIfSideways(src) {
   return cv;
 }
 
-async function pdfPageToJpeg(doc, pageNo, fileName) {
+async function pdfPageToJpeg(doc, pageNo, fileName, seen) {
   const page = await doc.getPage(pageNo);
   const base = page.getViewport({ scale: 1 });
 
@@ -214,6 +313,8 @@ async function pdfPageToJpeg(doc, pageNo, fileName) {
 
   await page.render({ canvasContext: ctx, viewport: vp }).promise;
   page.cleanup();
+
+  if (seen && duplicate(full, seen)) return [];
 
   const label = `${fileName} p${pageNo}`;
   return sliceIntoTiles(uprightIfSideways(full), label);
@@ -248,7 +349,7 @@ function sliceIntoTiles(full, label) {
   return out;
 }
 
-async function imageToJpeg(file) {
+async function imageToJpeg(file, seen) {
   const bmp = await createImageBitmap(file);
   const g = gridFor(bmp.width, bmp.height);
   const span = Math.max(g.cols, g.rows);
@@ -263,6 +364,7 @@ async function imageToJpeg(file) {
   ctx.drawImage(bmp, 0, 0, cv.width, cv.height);
   bmp.close();
 
+  if (seen && duplicate(cv, seen)) return [];
   return sliceIntoTiles(uprightIfSideways(cv), file.name);
 }
 
