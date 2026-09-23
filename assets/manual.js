@@ -11,8 +11,8 @@
    model call moves out of the app and into a browser tab.
    ========================================================================== */
 
-import { pages as renderPages } from './scan.js?v=38';
-import { buildPrompt } from './audit.js?v=38';
+import { pages as renderPages } from './scan.js?v=39';
+import { buildPrompt } from './audit.js?v=39';
 
 const ZIP_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
 let zipReady = null;

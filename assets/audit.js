@@ -3,9 +3,9 @@
    Provider-agnostic: the wire format lives in providers.js.
    ========================================================================== */
 
-import { PROVIDERS } from './providers.js?v=38';
+import { PROVIDERS } from './providers.js?v=39';
 import { CATEGORIES, DOCUMENTS, documentsToCheck, STANDING_CHECKS, MONTH_STYLE,
-         pickExamples, canonCat, STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=38';
+         pickExamples, canonCat, STEMS, WRONG_STEMS, DEFAULT_STEM } from './corpus.js?v=39';
 
 /* --------------------------------------------------------------------------
    The read prompt is built fresh each run so that examples imported since the
@@ -53,6 +53,17 @@ HOW TO READ A PAGE — this is the part that is most often done badly
 Do NOT skim the page and report what stands out. That produces one finding on a page
 that has four, which is the single biggest cause of an incomplete query sheet.
 
+IF THE PAGE IS A RULED TABLE WITH ONE ROW PER PERSON, TRANSCRIBE IT INSTEAD.
+Fill in "table" and copy every row out, cell by cell. Do not decide what is wrong —
+the blank cells are found afterwards by counting, which is far more reliable than
+looking. This was measured on real folders: asked to say what was wrong, a reader
+found 3 of the 4 queries that name nobody and 0 of the 14 that name a person,
+because a signature column that is six-eighths filled looks filled. 27 of 43 real
+queries name a person, so that is most of the sheet.
+Still fill in "issues" for anything a transcription cannot carry — an alteration,
+a wrong value, a whole document missing — but on a table page the transcription is
+the part that matters.
+
 Work it like the auditor does:
   1. Identify which document the page is, from the list above.
   2. Take that document's field list — every entry, in order.
@@ -99,6 +110,7 @@ Reply with ONLY a JSON object, no prose and no code fence:
   "month":"<e.g. Jun'26, or empty if not legible>",
   "visits":"<ONLY on a Bank Manager Agency Visit Register page — otherwise omit. An array of every entry you can read on it: [{\"cm\":\"<the employee name in that row>\",\"month\":\"<the month of the visit date, e.g. Apr'26>\"}]. List every row, not just defective ones — these are compared across the whole folder afterwards to find who never visited>",
   "checked":"<REQUIRED whenever you recognised the document. One entry for EVERY field in that document's list above, in order: [{\"field\":\"<the field>\",\"verdict\":\"ok|blank|wrong|absent\"}]. Do not shorten this list. It is checked against the document's field list, and a short list means the page is read again>",
+  "table":"<REQUIRED on any page that is a RULED TABLE with one row per person — the manpower register, the product declaration, the no-dues and monthly compliance declarations, the visiting register, the repo tracker. This matters more than the issues list, so do it first and do it properly. Transcribe the table: {\"who\":\"<the column heading that holds the person, e.g. CM Name>\",\"ignore\":[\"<columns that are reference data rather than things that must be filled: employee IDs, locations, products, buckets, case counts>\"],\"rows\":[{\"<column heading>\":\"<exactly what is written in that cell>\"}]}. EVERY row that has anything written on it, including the rows where nothing is wrong. An empty cell is \"\". ANY mark at all counts as filled — initials, a scrawl, 'on behalf of', an employee number written in the signature box. Stop at the last used row; printed empty rows at the foot of the form are not people. This is a transcription, not a judgement: copy the cells and let the blanks be found afterwards>",
   "roster":"<REQUIRED on ANY page that names the agency's Collection Managers — the sign-off page, the declaration cum undertaking, the manpower register's CM column, or a monthly declaration's CM details. An array of their names exactly as written. Give this even when the page has nothing wrong with it and even when you have already given it for another page: without it the whole-folder check for who never visited cannot run at all, and two real queries go unraised>",
   "signoff":"<ONLY on the Agency Visit Sign Off page — otherwise omit. An object with: date, agency, address, signedBy, designation, stamp, auditor, auditorNo, cmNames, cmIds, barcode. Copy each exactly as written; leave any you cannot read as an empty string>",
   "issues":[{"document":"<the DOCUMENT — the name of the printed page itself, e.g. 'Manpower register' or 'No Dues and Data Purging Declaration'. NEVER a category name: 'Code Of Conduct' and 'Data Security' are categories, not documents>",
@@ -357,7 +369,15 @@ export function phrase(issue) {
   }
 
   if (issue.field) s += ` (i.e. ${issue.field})`;
-  if (issue.who) s += `(${issue.whoLabel || 'CM Name'} -:${issue.who})`;
+  /* Each document declares who its rows belong to — the manpower register lists
+     Executives, the repo tracker is indexed by LAN No. Falling straight back to
+     "CM Name" labelled an Executive as a Collection Manager, which is wrong on
+     the face of the sheet. */
+  if (issue.who) {
+    const label = issue.whoLabel ||
+      DOCUMENTS.find(d => d.name === issue.document)?.who || 'CM Name';
+    s += `(${label} -:${issue.who})`;
+  }
   return s;
 }
 
@@ -420,6 +440,80 @@ export function correction(page) {
     case 'upside-down': case 'upside down': case '180': return 180;
     default: return 0;
   }
+}
+
+/* --------------------------------------------------------------------------
+   Turn a transcribed table into issues, by counting.
+
+   This is the whole point of asking for the table. Finding a blank cell among
+   forty rows and tracing it across to the name on that row is not a judgement
+   — it is a filter, and a filter does not get bored on row thirty. Asked to
+   judge instead, a reader found 0 of the 14 queries that name a person on one
+   agency while getting 3 of the 4 that name nobody, because a column six
+   eighths signed reads as signed.
+   -------------------------------------------------------------------------- */
+const BLANK_CELL = new Set(['', '-', '--', 'blank', 'empty', 'nil', 'na', 'n/a',
+                            'none', 'not filled', 'not available', 'missing']);
+
+const isBlankCell = v => BLANK_CELL.has(String(v ?? '').trim().toLowerCase());
+
+function fromTable(page) {
+  const t = page.table;
+  if (!t) return [];
+
+  const rows = t.rows.filter(r => r && typeof r === 'object' &&
+    Object.values(r).some(v => !isBlankCell(v)));       // a wholly empty line is not a person
+  if (!rows.length) return [];
+
+  /* the column naming the person, as declared — falling back to the first
+     heading that looks like one, because a blank cell with nobody attached to
+     it is exactly the query the firm sends back */
+  const declared = String(t.who || '').trim();
+  const whoCol = (declared && rows.some(r => declared in r))
+    ? declared
+    : (Object.keys(rows[0]).find(k => /name|lan/i.test(k)) || '');
+
+  /* reference columns are not defects: an employee ID left blank on a product
+     declaration is untidy, not a query, and reporting them buries the real ones */
+  const skip = new Set([...(t.ignore || []), whoCol]
+    .filter(Boolean).map(s => String(s).toLowerCase().trim()));
+
+  const columns = [...new Set(rows.flatMap(r => Object.keys(r)))];
+  const out = [];
+
+  for (const col of columns) {
+    if (skip.has(col.toLowerCase().trim())) continue;
+
+    const empty = rows.filter(r => isBlankCell(r[col]));
+    if (!empty.length) continue;
+
+    /* blank for everyone is written once without names — "(All Executive Sign)"
+       is how the firm's own sheets read, not forty names */
+    const all = empty.length === rows.length && rows.length > 2;
+
+    const doc = fixDocument(page.doc, '');
+    const base = {
+      document: doc, field: col, month: page.month || '',
+      category: canonCat(DOCUMENTS.find(d => d.name === doc)?.cat || '') || 'Process Management',
+      wrong: false, fromTable: true
+    };
+
+    if (all || !whoCol) {
+      const issue = { ...base, who: all ? `__ALL__${rows.length}` : '', whoLabel: '' };
+      issue.text = phrase(issue);
+      out.push(issue);
+      continue;
+    }
+
+    for (const r of empty) {
+      const who = String(r[whoCol] ?? '').trim();
+      if (!who) continue;
+      const issue = { ...base, who, whoLabel: /lan/i.test(whoCol) ? 'LAN No.' : whoCol };
+      issue.text = phrase(issue);
+      out.push(issue);
+    }
+  }
+  return out;
 }
 
 export function shallow(page) {
@@ -516,6 +610,10 @@ export async function readBatch(cfg, batch, signal) {
     /* the per-field verdicts, kept so a page read too shallowly can be caught
        rather than quietly accepted as clean */
     checked: Array.isArray(p.checked) ? p.checked : [],
+    /* the transcribed table, from which the blanks are counted rather than
+       spotted — see fromTable() */
+    table: (p.table && Array.isArray(p.table.rows) && p.table.rows.length)
+      ? p.table : null,
     issues: (Array.isArray(p.issues) ? p.issues : []).map(i => {
       /* corrected here, not just at phrasing time, so collation groups on the
          real document rather than on whatever the model called it */
@@ -824,31 +922,57 @@ export function visitGaps(findings) {
 
 export function collate(findings) {
   let flat = [];
-  findings.forEach(f => (f.issues || []).forEach(i =>
-    flat.push(cleanWho({ ...i, source: f.label }))));
+  findings.forEach(f => {
+    /* Where a page was transcribed, the counted blanks replace the reported
+       ones for the fields they cover. They are not merged: on the same field
+       the count is right and the glance is not, and keeping both would pair a
+       named row with the same field reported against nobody. Issues the
+       transcription cannot express — an alteration, a wrong value, a missing
+       document — are kept whatever else is on the page. */
+    const counted = fromTable(f);
+    const covered = new Set(counted.map(i => String(i.field).toLowerCase().trim()));
+
+    for (const i of counted) flat.push(cleanWho({ ...i, source: f.label }));
+
+    for (const i of (f.issues || [])) {
+      const field = String(i.field || '').toLowerCase().trim();
+      if (f.table && covered.has(field) && !i.wrong && !i.note) continue;
+      flat.push(cleanWho({ ...i, source: f.label }));
+    }
+  });
 
   flat = mergeFields(flat);
 
-  /* pass 1 — same document+field+month, different people */
-  const byDFM = new Map();
+  /* pass 1 — one entry per PERSON per field, carrying that person's months.
+     The person has to come first. Gathering people per month instead splits one
+     person across a row for every month they appear in, where the firm's sheets
+     carry each person once with their own run:
+       "…Apr'26 to Jun'26. (i.e. CM Sign)(CM Name -:Sarmila Sarkar)"
+       "…May'26 & Jun'26. (i.e. CM Sign)(CM Name -:Santanu Tarafder & Santanu Ghosh)" */
+  const byPerson = new Map();
   for (const i of flat) {
-    const k = [i.document, i.field, i.month].map(x => String(x || '').toLowerCase().trim()).join('|');
-    if (!byDFM.has(k)) byDFM.set(k, { ...i, whos: [], sources: [] });
-    const g = byDFM.get(k);
-    if (i.who) g.whos.push(i.who);
+    const k = [i.document, i.field, i.who].map(x => String(x || '').toLowerCase().trim()).join('|');
+    if (!byPerson.has(k)) byPerson.set(k, { ...i, months: [], sources: [] });
+    const g = byPerson.get(k);
+    if (i.month) g.months.push(i.month);
     g.sources.push(i.source);
   }
 
-  /* pass 2 — same document+field+people, different months */
+  /* pass 2 — people whose months are identical share a row */
   const byDFW = new Map();
-  for (const g of byDFM.values()) {
-    const names = joinNames(g.whos);
-    const k = [g.document, g.field, names].map(x => String(x || '').toLowerCase().trim()).join('|');
-    if (!byDFW.has(k)) byDFW.set(k, { ...g, names, months: [], sources: [] });
+  for (const g of byPerson.values()) {
+    const months = joinMonths(g.months);
+    const k = [g.document, g.field, months].map(x => String(x || '').toLowerCase().trim()).join('|');
+    if (!byDFW.has(k)) byDFW.set(k, { ...g, whos: [], months: [], sources: [] });
     const h = byDFW.get(k);
-    if (g.month) h.months.push(g.month);
+    if (g.who) h.whos.push(g.who);
+    /* the RAW months, never the joined string. Joining twice loses the middle
+       of a run: "Apr'26 to Jun'26" read back finds only Apr and Jun, and three
+       consecutive months came out as "Apr'26 & Jun'26". */
+    h.months.push(...g.months);
     h.sources.push(...g.sources);
   }
+  for (const h of byDFW.values()) h.names = joinNames(h.whos);
 
   /* An audit covers one quarter, so the monthly pages cluster. A month far
      outside that cluster is far more likely to be a misread than a real page
